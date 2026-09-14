@@ -7,7 +7,10 @@ environment:
   sdk: ^3.13.0
 
 dependencies:
+  archive: ^4.0.9
+  crypto: ^3.0.7
   http: ^1.6.0
+  path: ^1.9.1
 
 dev_dependencies:
   lints: ^6.0.0
