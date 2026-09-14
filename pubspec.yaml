@@ -9,8 +9,10 @@ environment:
 dependencies:
   archive: ^4.0.9
   crypto: ^3.0.7
+  ffi: ^2.2.0
   http: ^1.6.0
   path: ^1.9.1
+  win32: ^6.4.0
 
 dev_dependencies:
   lints: ^6.0.0

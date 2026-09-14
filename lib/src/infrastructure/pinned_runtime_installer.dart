@@ -2,24 +2,13 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../application/runtime_services.dart';
 import '../domain/artifact_models.dart';
 import '../domain/runtime_models.dart';
 import 'artifact_installer.dart';
 import 'http_artifact_downloader.dart';
 import 'pinned_runtime_catalog.dart';
 import 'runtime_storage.dart';
-
-abstract interface class AiRuntimeInstallService {
-  AiRuntimeDefinition definition(AiRuntimeKind kind);
-
-  Future<AiRuntimeInstallation?> installed(AiRuntimeKind kind);
-
-  Future<AiRuntimeInstallation> install(
-    AiRuntimeKind kind, {
-    ArtifactDownloadCancellation? cancellation,
-    void Function(ArtifactInstallProgress progress)? onProgress,
-  });
-}
 
 class PinnedAiRuntimeInstaller implements AiRuntimeInstallService {
   PinnedAiRuntimeInstaller({
