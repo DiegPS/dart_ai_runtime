@@ -1,4 +1,4 @@
-# air_ai_runtime
+# dart_ai_runtime
 
 Reusable Dart infrastructure for local OpenCode-compatible AI runtimes. It
 extracts the runtime behavior proven in GodSense without depending on GodSense,
@@ -119,7 +119,7 @@ dart test test\integration\live_runtime_process_test.dart
 
 OpenCode and Kilo are independent projects distributed under the MIT License.
 Applications using this package must surface and preserve their upstream
-copyright and license notices. `air_ai_runtime` is not affiliated with or
+copyright and license notices. `dart_ai_runtime` is not affiliated with or
 endorsed by either project. Runtime providers and models may have separate
 prices, terms, and privacy policies; a free runtime does not guarantee free
 inference.

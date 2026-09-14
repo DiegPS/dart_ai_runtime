@@ -1,6 +1,6 @@
 # Architecture
 
-`air_ai_runtime` applies a domain/application/infrastructure split.
+`dart_ai_runtime` applies a domain/application/infrastructure split.
 
 ```text
 Host application UI and preferences

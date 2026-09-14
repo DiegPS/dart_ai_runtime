@@ -17,4 +17,4 @@ export 'src/infrastructure/runtime_health_client.dart';
 export 'src/infrastructure/runtime_storage.dart';
 
 /// Stable package identifier used by diagnostics and integration tests.
-const airAiRuntimePackageName = 'air_ai_runtime';
+const dartAiRuntimePackageName = 'dart_ai_runtime';

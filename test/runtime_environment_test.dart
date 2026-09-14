@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:air_ai_runtime/air_ai_runtime.dart';
+import 'package:dart_ai_runtime/dart_ai_runtime.dart';
 import 'package:path/path.dart' as p;
 import 'package:test/test.dart';
 

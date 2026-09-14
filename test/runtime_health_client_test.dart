@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:air_ai_runtime/air_ai_runtime.dart';
+import 'package:dart_ai_runtime/dart_ai_runtime.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:test/test.dart';
