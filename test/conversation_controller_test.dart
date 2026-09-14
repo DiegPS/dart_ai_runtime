@@ -182,6 +182,59 @@ void main() {
     await controller.dispose();
   });
 
+  test('reuses one runtime session across consecutive prompts', () async {
+    final client = _RuntimeClient();
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      reconciliationInterval: const Duration(seconds: 5),
+    );
+    var answer = 0;
+    client.onPrompt = () => scheduleMicrotask(() {
+      answer++;
+      final messageId = 'assistant-$answer';
+      client.emit(
+        _event('message.updated', messageId: messageId, role: 'assistant'),
+      );
+      client.emit(
+        _event(
+          'message.part.updated',
+          messageId: messageId,
+          partId: 'part-$answer',
+          fullText: 'Answer $answer',
+        ),
+      );
+      client.emit(_event('message.completed', messageId: messageId));
+    });
+
+    expect(
+      await controller.sendAndWait(
+        text: 'First',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'Current telemetry 1',
+      ),
+      'Answer 1',
+    );
+    expect(
+      await controller.sendAndWait(
+        text: 'Second',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'Current telemetry 2',
+      ),
+      'Answer 2',
+    );
+
+    expect(client.createSessionCount, 1);
+    expect(client.prompts.map((prompt) => prompt.system), [
+      'Current telemetry 1',
+      'Current telemetry 2',
+    ]);
+    expect(controller.state.sessionId, 'session-1');
+    await controller.dispose();
+  });
+
   test(
     'restores bounded history as untrusted context for a new session',
     () async {
@@ -255,6 +308,8 @@ class _RuntimeClient implements AiRuntimeClient {
   int abortCount = 0;
   bool disposed = false;
   AiPrompt? lastPrompt;
+  final List<AiPrompt> prompts = [];
+  int createSessionCount = 0;
 
   void emit(AiRuntimeEvent event) => _events.add(event);
 
@@ -272,7 +327,7 @@ class _RuntimeClient implements AiRuntimeClient {
 
   @override
   Future<AiSession> createSession({String? title}) async =>
-      const AiSession(id: 'session-1');
+      AiSession(id: 'session-${++createSessionCount}');
 
   @override
   Future<void> deleteSession(String sessionId) async {}
@@ -293,6 +348,7 @@ class _RuntimeClient implements AiRuntimeClient {
   @override
   Future<void> promptAsync(String sessionId, AiPrompt prompt) async {
     lastPrompt = prompt;
+    prompts.add(prompt);
     onPrompt?.call();
   }
 

@@ -16,6 +16,7 @@ export 'src/domain/runtime_models.dart';
 export 'src/infrastructure/artifact_installer.dart';
 export 'src/infrastructure/http_artifact_downloader.dart';
 export 'src/infrastructure/local_runtime_process_service.dart';
+export 'src/infrastructure/local_system_prompt_service.dart';
 export 'src/infrastructure/opencode_compatible_runtime_client.dart';
 export 'src/infrastructure/pinned_runtime_catalog.dart';
 export 'src/infrastructure/pinned_runtime_installer.dart';

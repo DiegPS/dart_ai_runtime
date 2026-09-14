@@ -82,13 +82,19 @@ class AiAuthPrompt {
       label: raw['message']?.toString() ?? raw['key'].toString(),
       placeholder: raw['placeholder']?.toString(),
       options: {
-        if (raw['options'] is List)
-          for (final option in (raw['options'] as List).whereType<Map>())
+        if (raw['options'] is List<Object?>)
+          for (final option
+              in (raw['options'] as List<Object?>)
+                  .whereType<Map<Object?, Object?>>())
             option['value'].toString(): option['label'].toString(),
       },
-      whenKey: condition is Map ? condition['key']?.toString() : null,
-      whenValue: condition is Map ? condition['value']?.toString() : null,
-      whenNot: condition is Map && condition['op'] == 'neq',
+      whenKey: condition is Map<Object?, Object?>
+          ? condition['key']?.toString()
+          : null,
+      whenValue: condition is Map<Object?, Object?>
+          ? condition['value']?.toString()
+          : null,
+      whenNot: condition is Map<Object?, Object?> && condition['op'] == 'neq',
     );
   }
 }

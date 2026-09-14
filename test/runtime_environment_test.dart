@@ -37,6 +37,28 @@ void main() {
     expect(environment['KILO_CLIENT'], 'airstream');
     expect(environment['KILO_DISABLE_TOOLS'], '1');
     expect(environment['KILO_DISABLE_EXTERNAL_SKILLS'], '1');
+    expect(environment['KILO_PURE'], '1');
     expect(environment['XDG_DATA_HOME'], storage.data(AiRuntimeKind.kilo).path);
+
+    final managedEnvironment =
+        LocalAiRuntimeProcessService.buildSanitizedEnvironment(
+          kind: AiRuntimeKind.kilo,
+          storage: storage,
+          username: 'kilo',
+          password: 'ephemeral-password',
+          allowManagedPlugins: true,
+        );
+    expect(managedEnvironment, isNot(contains('KILO_PURE')));
+    expect(
+      LocalAiRuntimeProcessService(storage).systemPromptService,
+      isNotNull,
+    );
+    expect(
+      LocalAiRuntimeProcessService(
+        storage,
+        enableNeutralSystemPrompts: false,
+      ).systemPromptService,
+      isNull,
+    );
   });
 }

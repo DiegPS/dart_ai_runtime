@@ -21,6 +21,10 @@ Airstream, Flutter widgets, Riverpod, or application preferences.
   reconciliation.
 - Framework-neutral provider authentication and safe model selection
   controllers.
+- Managed neutral agents that remove the built-in coding prompt while keeping
+  tools denied by default.
+- One-shot, private system-prompt transport keyed by runtime session, allowing
+  live host context to change on every turn.
 
 Downloads are deliberately dependency-injected through `ArtifactDownloader`.
 The package includes a simple resumable HTTP implementation, but host
@@ -78,9 +82,10 @@ final installer = PinnedAiRuntimeInstaller(
   downloader: downloader,
 );
 final health = AiRuntimeHealthClient();
+final processes = LocalAiRuntimeProcessService(storage);
 final supervisor = AiRuntimeSupervisor(
   installer: installer,
-  processes: LocalAiRuntimeProcessService(storage),
+  processes: processes,
   health: health,
   allowDownloads: true,
 );
@@ -89,6 +94,7 @@ final endpoint = await supervisor.start(AiRuntimeKind.openCode);
 final client = OpenCodeCompatibleRuntimeClient(
   endpoint: endpoint,
   workspaceDirectory: storage.workspace(endpoint.kind).path,
+  systemPromptService: processes.systemPromptService,
 );
 final providers = await client.providers();
 ```
@@ -98,6 +104,61 @@ the supervisor and a client factory. It opens SSE before dispatching, rejects
 events from previous turns, reconciles missed events through the message API,
 invalidates sessions after a process restart, and discards late events after
 cancellation. UI frameworks consume its `states` stream.
+
+The controller creates one runtime session lazily and reuses it for every
+consecutive prompt until `clear`, a runtime restart, or disposal. Reusing the
+session avoids another runtime start, health check, client setup, and session
+creation. The model still processes its conversation history for each turn, so
+the exact latency improvement depends on provider-side prompt caching and the
+selected model.
+
+The host may supply a different `systemPrompt` on every call. With
+`systemPromptService` configured as above, the client writes that value to a
+private one-shot file keyed by session ID. The trusted plugin consumes and
+deletes it while assembling the model request. This is necessary because the
+OpenCode-compatible system transformation hook does not receive the HTTP
+`system` field in its transform input.
+
+Managed neutral mode fails closed if the private runtime configuration lists
+another external plugin or contains an auto-loaded `.js`/`.ts` plugin. This
+prevents an unrelated plugin from silently adding instructions or tools. Hosts
+that intentionally need arbitrary upstream plugins must construct
+`LocalAiRuntimeProcessService` with `enableNeutralSystemPrompts: false` and then
+own the resulting prompt and tool security model themselves.
+
+```dart
+final conversation = AiConversationController(
+  supervisor: supervisor,
+  clientFactory: (endpoint) => OpenCodeCompatibleRuntimeClient(
+    endpoint: endpoint,
+    workspaceDirectory: storage.workspace(endpoint.kind).path,
+    systemPromptService: processes.systemPromptService,
+  ),
+);
+
+final first = await conversation.sendAndWait(
+  text: '¿Qué hago antes del dragón?',
+  providerId: 'kilo',
+  modelId: 'openrouter/free',
+  systemPrompt: currentGameTelemetry,
+);
+final second = await conversation.sendAndWait(
+  text: '¿Y si el jungla rival aparece abajo?',
+  providerId: 'kilo',
+  modelId: 'openrouter/free',
+  systemPrompt: refreshedGameTelemetry,
+);
+```
+
+Both calls use the same `conversation.state.sessionId`. Create separate
+controllers for independent simultaneous conversations. Calls within one
+controller are serialized; starting a second generation while one is active
+throws a `StateError`.
+
+Neutral prompt replacement controls which host instructions and tools reach the
+model; it does not make model output factually correct. Applications such as a
+game coach should provide structured, patch-specific facts and validate any
+item, ability, price, or statistical claim before presenting it as authoritative.
 
 `AiModelSelectionController` never chooses a paid model automatically and
 prefers `kilo/kilo-auto/free` when available. `AiProviderConnectionController`
@@ -134,6 +195,17 @@ Real process checks are opt-in and never perform inference:
 $env:DART_AI_RUNTIME_TEST_OPENCODE_EXE='C:\path\to\opencode.exe'
 $env:DART_AI_RUNTIME_TEST_KILO_EXE='C:\path\to\kilo.exe'
 dart test test\integration\live_runtime_process_test.dart
+```
+
+Real multi-turn inference is separately opt-in because it contacts the selected
+provider and may be subject to its terms, retention policy, rate limits, and
+costs:
+
+```powershell
+$env:DART_AI_RUNTIME_TEST_INFERENCE='1'
+$env:DART_AI_RUNTIME_TEST_OPENCODE_EXE='C:\path\to\opencode.exe'
+$env:DART_AI_RUNTIME_TEST_KILO_EXE='C:\path\to\kilo.exe'
+dart test test\integration\live_neutral_session_test.dart
 ```
 
 ## Third-party runtimes

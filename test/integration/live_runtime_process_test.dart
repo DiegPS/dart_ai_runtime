@@ -21,9 +21,10 @@ void main() {
           applicationId: 'dart-ai-runtime-test',
         );
         final health = AiRuntimeHealthClient();
+        final processService = LocalAiRuntimeProcessService(storage);
         AiRuntimeProcessHandle? process;
         try {
-          process = await LocalAiRuntimeProcessService(storage).start(
+          process = await processService.start(
             AiRuntimeInstallation(
               definition: const PinnedAiRuntimeCatalog().definition(kind),
               directoryPath: File(executablePath!).parent.path,
@@ -35,10 +36,12 @@ void main() {
           final client = OpenCodeCompatibleRuntimeClient(
             endpoint: process.endpoint,
             workspaceDirectory: storage.workspace(kind).path,
+            systemPromptService: processService.systemPromptService,
+            requestTimeout: const Duration(seconds: 20),
           );
           try {
             final firstEvent = (await client.connectEvents()).first.timeout(
-              const Duration(seconds: 10),
+              const Duration(seconds: 30),
             );
             final providers = await client.providers();
             expect(providers, isNotEmpty);

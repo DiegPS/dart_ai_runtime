@@ -1,0 +1,3 @@
+# Real OpenCode-compatible binaries may select the same fallback port even
+# when started with --port 0, so process integration tests must not overlap.
+concurrency: 1

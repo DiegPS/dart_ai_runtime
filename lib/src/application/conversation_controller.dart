@@ -12,6 +12,11 @@ import 'runtime_supervisor.dart';
 /// Framework-neutral, restart-safe conversation orchestration for OpenCode and
 /// Kilo-compatible runtimes.
 class AiConversationController {
+  /// Creates a controller that keeps one session alive across prompt turns.
+  ///
+  /// [clientFactory] is invoked again only after the supervised runtime process
+  /// changes. A restored local [historyStore] is injected as untrusted user
+  /// context when the runtime session itself no longer exists.
   AiConversationController({
     required AiRuntimeSupervisor supervisor,
     required AiRuntimeClient Function(AiRuntimeEndpoint endpoint) clientFactory,
@@ -56,7 +61,10 @@ class AiConversationController {
   final Set<String> _userMessageIds = {};
   String? _assistantMessageId;
 
+  /// The latest immutable conversation state.
   AiConversationState get state => _state;
+
+  /// State changes for presentation layers and other host integrations.
   Stream<AiConversationState> get states => _states.stream;
 
   AiRuntimeClient get _activeClient {
@@ -75,6 +83,14 @@ class AiConversationController {
     return _client!;
   }
 
+  /// Starts one asynchronous turn in the current runtime session.
+  ///
+  /// Creates the session lazily on the first call and reuses it afterwards.
+  /// [systemPrompt] may change on every turn, allowing hosts to refresh live
+  /// telemetry without discarding conversation context.
+  ///
+  /// Throws a [StateError] if another generation is active or the runtime is
+  /// unavailable.
   Future<void> sendMessage({
     required String text,
     required String providerId,
@@ -162,6 +178,10 @@ class AiConversationController {
     }
   }
 
+  /// Sends one turn and completes with the final assistant text.
+  ///
+  /// Aborts the active generation and throws a [TimeoutException] if [timeout]
+  /// expires.
   Future<String> sendAndWait({
     required String text,
     required String providerId,
@@ -214,9 +234,9 @@ class AiConversationController {
         if (!_current(generation)) return;
         if (event.sessionId != null && event.sessionId != sessionId) return;
         if (event.isError) {
-          final error =
-              event.properties['error'] ??
-              event.raw['error'] ??
+          final Object error =
+              event.properties['error'] as Object? ??
+              event.raw['error'] as Object? ??
               StateError('The runtime reported a generation error.');
           _stopStreaming();
           _emit(
@@ -333,6 +353,7 @@ class AiConversationController {
     });
   }
 
+  /// Cancels the active generation while retaining the reusable session.
   Future<void> abort() async {
     final sessionId = _state.sessionId;
     if (sessionId == null || !_state.isBusy) return;
@@ -370,6 +391,7 @@ class AiConversationController {
     }
   }
 
+  /// Deletes the runtime session and clears local conversation history.
   Future<void> clear() async {
     _generation++;
     _turnFinished = true;
@@ -490,7 +512,7 @@ class AiConversationController {
       final parts = message['parts'];
       if (parts is! List) continue;
       final text = parts
-          .whereType<Map>()
+          .whereType<Map<Object?, Object?>>()
           .where((item) => item['type'] == 'text')
           .map((item) => item['text']?.toString() ?? '')
           .join();
@@ -532,6 +554,7 @@ class AiConversationController {
     if (!_states.isClosed) _states.add(value);
   }
 
+  /// Releases streams and the active client without stopping the supervisor.
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;

@@ -5,15 +5,24 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 import '../application/runtime_client.dart';
+import '../application/runtime_services.dart';
 import '../domain/runtime_api_models.dart';
 import '../domain/runtime_models.dart';
+import 'local_system_prompt_service.dart';
 
+/// Calls the shared loopback HTTP and SSE API exposed by OpenCode and Kilo.
 class OpenCodeCompatibleRuntimeClient
     implements AiRuntimeClient, AiProviderAuthClient {
+  /// Creates a client scoped to one runtime endpoint and workspace.
+  ///
+  /// Supplying [systemPromptService] enables trusted neutral system prompts.
+  /// The service must refer to the same private storage used to start the
+  /// managed runtime.
   OpenCodeCompatibleRuntimeClient({
     required this.endpoint,
     required this.workspaceDirectory,
     http.Client? client,
+    this.systemPromptService,
     this.requestTimeout = const Duration(seconds: 10),
   }) : _client = client ?? http.Client(),
        _ownsClient = client == null {
@@ -29,57 +38,72 @@ class OpenCodeCompatibleRuntimeClient
   final AiRuntimeEndpoint endpoint;
   final String workspaceDirectory;
   final Duration requestTimeout;
+
+  /// The optional trusted bridge that replaces runtime-generated system text.
+  ///
+  /// Pass the bridge exposed by the process service when the managed runtime
+  /// was started with neutral system prompts enabled.
+  final AiRuntimeSystemPromptService? systemPromptService;
   final http.Client _client;
   final bool _ownsClient;
 
   @override
   Future<List<AiProviderInfo>> providers() async {
     final body = await _json('GET', '/provider');
-    if (body is! Map) {
+    if (body is! Map<Object?, Object?>) {
       throw const FormatException(
         'Runtime provider response is not an object.',
       );
     }
     final root = Map<String, dynamic>.from(body);
-    final connected = (root['connected'] as List? ?? const [])
+    final connected = (root['connected'] as List<Object?>? ?? const <Object?>[])
         .map((value) => value.toString())
         .toSet();
-    final rawProviders = root['all'] is List
-        ? root['all'] as List
-        : root['providers'] is List
-        ? root['providers'] as List
-        : const [];
+    final rawProviders = root['all'] is List<Object?>
+        ? root['all'] as List<Object?>
+        : root['providers'] is List<Object?>
+        ? root['providers'] as List<Object?>
+        : const <Object?>[];
     return rawProviders
-        .whereType<Map>()
+        .whereType<Map<Object?, Object?>>()
         .map((raw) {
           final provider = Map<String, dynamic>.from(raw);
           final id = provider['id']?.toString() ?? '';
           final rawModels = provider['models'];
           final defaults = root['default'];
-          final entries = rawModels is Map
+          final entries = rawModels is Map<Object?, Object?>
               ? rawModels.entries
-              : const Iterable<MapEntry<dynamic, dynamic>>.empty();
+              : const Iterable<MapEntry<Object?, Object?>>.empty();
           return AiProviderInfo(
             id: id,
             name: provider['name']?.toString() ?? id,
             connected: connected.contains(id),
             models: entries
-                .where((entry) => entry.value is Map)
-                .where((entry) => _supportsText(entry.value as Map))
+                .where((entry) => entry.value is Map<Object?, Object?>)
+                .where(
+                  (entry) =>
+                      _supportsText(entry.value as Map<Object?, Object?>),
+                )
                 .map((entry) {
-                  final model = Map<String, dynamic>.from(entry.value as Map);
+                  final model = Map<String, dynamic>.from(
+                    entry.value as Map<Object?, Object?>,
+                  );
                   final modelId =
                       model['id']?.toString() ?? entry.key.toString();
                   return AiModelInfo(
                     id: modelId,
                     name: model['name']?.toString() ?? modelId,
                     providerId: id,
-                    isDefault: defaults is Map && defaults[id] == modelId,
+                    isDefault:
+                        defaults is Map<Object?, Object?> &&
+                        defaults[id] == modelId,
                     isFree: _isFreeModel(id, modelId, model),
                     supportsReasoning:
                         model['reasoning'] == true ||
-                        model['capabilities'] is Map &&
-                            (model['capabilities'] as Map)['reasoning'] == true,
+                        model['capabilities'] is Map<Object?, Object?> &&
+                            (model['capabilities']
+                                    as Map<Object?, Object?>)['reasoning'] ==
+                                true,
                   );
                 })
                 .toList(growable: false),
@@ -92,13 +116,15 @@ class OpenCodeCompatibleRuntimeClient
   @override
   Future<List<AiAuthMethod>> authMethods() async {
     final body = await _json('GET', '/provider/auth');
-    if (body is! Map) return const [];
+    if (body is! Map<Object?, Object?>) return const [];
     final methods = <AiAuthMethod>[];
     for (final entry in body.entries) {
-      final values = entry.value is List ? entry.value as List : [entry.value];
+      final values = entry.value is List<Object?>
+          ? entry.value as List<Object?>
+          : <Object?>[entry.value];
       for (var index = 0; index < values.length; index++) {
         final value = values[index];
-        if (value is! Map) continue;
+        if (value is! Map<Object?, Object?>) continue;
         final method = Map<String, dynamic>.from(value);
         methods.add(
           AiAuthMethod(
@@ -110,9 +136,9 @@ class OpenCodeCompatibleRuntimeClient
                 method['type']?.toString() ??
                 'Authentication',
             index: index,
-            prompts: method['prompts'] is List
-                ? (method['prompts'] as List)
-                      .whereType<Map>()
+            prompts: method['prompts'] is List<Object?>
+                ? (method['prompts'] as List<Object?>)
+                      .whereType<Map<Object?, Object?>>()
                       .map(AiAuthPrompt.fromJson)
                       .toList(growable: false)
                 : const [],
@@ -189,29 +215,47 @@ class OpenCodeCompatibleRuntimeClient
   @override
   Future<List<Map<String, dynamic>>> messages(String sessionId) async {
     final body = await _json('GET', '/session/${_segment(sessionId)}/message');
-    if (body is! List) {
+    if (body is! List<Object?>) {
       throw const FormatException('Runtime messages response is not a list.');
     }
     return body
-        .whereType<Map>()
+        .whereType<Map<Object?, Object?>>()
         .map((value) => Map<String, dynamic>.from(value))
         .toList(growable: false);
   }
 
   @override
-  Future<void> promptAsync(String sessionId, AiPrompt prompt) => _empty(
-    'POST',
-    '/session/${_segment(sessionId)}/prompt_async',
-    body: prompt.toJson(),
-  );
+  Future<void> promptAsync(String sessionId, AiPrompt prompt) async {
+    final bridge = systemPromptService;
+    final body = prompt.toJson();
+    if (bridge != null) {
+      await bridge.setSystemPrompt(endpoint.kind, sessionId, prompt.system);
+      body['system'] = LocalAiRuntimeSystemPromptService.transportPlaceholder;
+    }
+    try {
+      await _empty(
+        'POST',
+        '/session/${_segment(sessionId)}/prompt_async',
+        body: body,
+      );
+    } catch (_) {
+      await bridge?.removeSystemPrompt(endpoint.kind, sessionId);
+      rethrow;
+    }
+  }
 
   @override
   Future<void> abort(String sessionId) =>
       _empty('POST', '/session/${_segment(sessionId)}/abort');
 
   @override
-  Future<void> deleteSession(String sessionId) =>
-      _empty('DELETE', '/session/${_segment(sessionId)}');
+  Future<void> deleteSession(String sessionId) async {
+    try {
+      await _empty('DELETE', '/session/${_segment(sessionId)}');
+    } finally {
+      await systemPromptService?.removeSystemPrompt(endpoint.kind, sessionId);
+    }
+  }
 
   @override
   Stream<AiRuntimeEvent> events() async* {
@@ -257,7 +301,7 @@ class OpenCodeCompatibleRuntimeClient
     if (data.isEmpty) return null;
     try {
       final decoded = jsonDecode(data.toString());
-      if (decoded is! Map) return null;
+      if (decoded is! Map<Object?, Object?>) return null;
       final map = Map<String, dynamic>.from(decoded);
       if (!map.containsKey('type') && eventType != null) {
         map['type'] = eventType;
@@ -323,19 +367,23 @@ class OpenCodeCompatibleRuntimeClient
   static String _segment(String value) => Uri.encodeComponent(value);
 
   static Map<String, dynamic> _object(Object? value) {
-    if (value is! Map) {
+    if (value is! Map<Object?, Object?>) {
       throw const FormatException('Runtime response is not an object.');
     }
     return Map<String, dynamic>.from(value);
   }
 
-  static bool _supportsText(Map<dynamic, dynamic> model) {
+  static bool _supportsText(Map<Object?, Object?> model) {
     if (model['status'] == 'deprecated') return false;
     final capabilities = model['capabilities'];
-    final input = capabilities is Map ? capabilities['input'] : null;
-    final output = capabilities is Map ? capabilities['output'] : null;
-    return (input is! Map || input['text'] != false) &&
-        (output is! Map || output['text'] != false);
+    final input = capabilities is Map<Object?, Object?>
+        ? capabilities['input']
+        : null;
+    final output = capabilities is Map<Object?, Object?>
+        ? capabilities['output']
+        : null;
+    return (input is! Map<Object?, Object?> || input['text'] != false) &&
+        (output is! Map<Object?, Object?> || output['text'] != false);
   }
 
   static bool _isFreeModel(
@@ -348,7 +396,7 @@ class OpenCodeCompatibleRuntimeClient
       return true;
     }
     final cost = model['cost'];
-    return cost is Map &&
+    return cost is Map<Object?, Object?> &&
         cost.isNotEmpty &&
         cost['input'] is num &&
         cost['input'] == 0 &&

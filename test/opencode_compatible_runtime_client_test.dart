@@ -110,6 +110,70 @@ void main() {
       throwsArgumentError,
     );
   });
+
+  test(
+    'publishes the system prompt before dispatch and hides it from HTTP',
+    () async {
+      final bridge = _SystemPromptService();
+      late http.Request captured;
+      final transport = MockClient((request) async {
+        captured = request;
+        expect(bridge.prompt, 'Private telemetry');
+        return http.Response('', 204);
+      });
+      addTearDown(transport.close);
+      final client = OpenCodeCompatibleRuntimeClient(
+        endpoint: _endpoint(AiRuntimeKind.openCode),
+        workspaceDirectory: '.',
+        client: transport,
+        systemPromptService: bridge,
+      );
+
+      await client.promptAsync(
+        'ses_1',
+        const AiPrompt(
+          providerId: 'provider',
+          modelId: 'model',
+          system: 'Private telemetry',
+          text: 'Question',
+        ),
+      );
+
+      final body = Map<String, dynamic>.from(jsonDecode(captured.body) as Map);
+      expect(
+        body['system'],
+        LocalAiRuntimeSystemPromptService.transportPlaceholder,
+      );
+      expect(captured.body, isNot(contains('Private telemetry')));
+      expect(bridge.setCalls, 1);
+    },
+  );
+
+  test('cleans a pending bridge prompt when dispatch fails', () async {
+    final bridge = _SystemPromptService();
+    final transport = MockClient((_) async => http.Response('failure', 500));
+    addTearDown(transport.close);
+    final client = OpenCodeCompatibleRuntimeClient(
+      endpoint: _endpoint(AiRuntimeKind.kilo),
+      workspaceDirectory: '.',
+      client: transport,
+      systemPromptService: bridge,
+    );
+
+    await expectLater(
+      client.promptAsync(
+        'ses_1',
+        const AiPrompt(
+          providerId: 'provider',
+          modelId: 'model',
+          system: 'System',
+          text: 'Question',
+        ),
+      ),
+      throwsA(isA<AiRuntimeApiException>()),
+    );
+    expect(bridge.removeCalls, 1);
+  });
 }
 
 AiRuntimeEndpoint _endpoint(AiRuntimeKind kind) => AiRuntimeEndpoint(
@@ -119,3 +183,31 @@ AiRuntimeEndpoint _endpoint(AiRuntimeKind kind) => AiRuntimeEndpoint(
   password: 'secret',
   pid: 1,
 );
+
+class _SystemPromptService implements AiRuntimeSystemPromptService {
+  String? prompt;
+  int setCalls = 0;
+  int removeCalls = 0;
+
+  @override
+  Future<void> clearSystemPrompts(AiRuntimeKind kind) async {}
+
+  @override
+  Future<void> prepare(AiRuntimeKind kind) async {}
+
+  @override
+  Future<void> removeSystemPrompt(AiRuntimeKind kind, String sessionId) async {
+    removeCalls++;
+    prompt = null;
+  }
+
+  @override
+  Future<void> setSystemPrompt(
+    AiRuntimeKind kind,
+    String sessionId,
+    String systemPrompt,
+  ) async {
+    setCalls++;
+    prompt = systemPrompt;
+  }
+}

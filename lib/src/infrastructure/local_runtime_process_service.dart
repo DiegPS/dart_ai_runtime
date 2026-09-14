@@ -8,13 +8,32 @@ import 'package:path/path.dart' as p;
 
 import '../application/runtime_services.dart';
 import '../domain/runtime_models.dart';
+import 'local_system_prompt_service.dart';
 import 'runtime_storage.dart';
 import 'windows_job_object.dart';
 
+/// Starts an isolated OpenCode-compatible runtime on a dynamic loopback port.
 class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
-  LocalAiRuntimeProcessService(this._storage);
+  /// Creates a process service backed by private [AiRuntimeStorage].
+  ///
+  /// Managed neutral prompts are enabled by default. Setting
+  /// [enableNeutralSystemPrompts] to `false` restores pure upstream mode and
+  /// disables all external plugins.
+  LocalAiRuntimeProcessService(
+    this._storage, {
+    AiRuntimeSystemPromptService? systemPromptService,
+    bool enableNeutralSystemPrompts = true,
+  }) : _systemPromptService = enableNeutralSystemPrompts
+           ? systemPromptService ?? LocalAiRuntimeSystemPromptService(_storage)
+           : null;
 
   final AiRuntimeStorage _storage;
+  final AiRuntimeSystemPromptService? _systemPromptService;
+
+  /// The bridge used by clients to supply neutral per-session system prompts.
+  ///
+  /// The value is `null` when neutral system prompts were explicitly disabled.
+  AiRuntimeSystemPromptService? get systemPromptService => _systemPromptService;
 
   @override
   Future<AiRuntimeProcessHandle> start(
@@ -24,6 +43,7 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
     final definition = installation.definition;
     final kind = definition.kind;
     await _storage.createPrivateDirectories(kind);
+    await _systemPromptService?.prepare(kind);
     final executable = File(
       p.join(installation.directoryPath, definition.executableName),
     );
@@ -40,6 +60,7 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
         username: kind.id,
         password: password,
         parentEnvironment: Platform.environment,
+        allowManagedPlugins: _systemPromptService != null,
       ),
       includeParentEnvironment: false,
       runInShell: false,
@@ -55,6 +76,9 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
         job: job,
         username: kind.id,
         password: password,
+        cleanup: _systemPromptService == null
+            ? null
+            : () => _systemPromptService.clearSystemPrompts(kind),
       );
       await running.waitForEndpoint(const Duration(seconds: 15));
       return running;
@@ -96,6 +120,7 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
     required String username,
     required String password,
     Map<String, String> parentEnvironment = const {},
+    bool allowManagedPlugins = false,
   }) {
     final sanitized = <String, String>{};
     for (final entry in parentEnvironment.entries) {
@@ -117,7 +142,7 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
       '${prefix}_SERVER_PASSWORD': password,
       '${prefix}_SERVER_USERNAME': username,
       '${prefix}_DISABLE_AUTOUPDATE': '1',
-      '${prefix}_PURE': '1',
+      if (!allowManagedPlugins) '${prefix}_PURE': '1',
       '${prefix}_DISABLE_PROJECT_CONFIG': '1',
       '${prefix}_CLIENT': storage.applicationId,
       '${prefix}_DISABLE_TOOLS': '1',
@@ -138,8 +163,10 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
     required WindowsJobObject? job,
     required this.username,
     required this.password,
+    required Future<void> Function()? cleanup,
   }) : _process = process,
-       _job = job {
+       _job = job,
+       _cleanupCallback = cleanup {
     _stdoutSubscription = process.stdout
         .transform(utf8.decoder)
         .transform(const LineSplitter())
@@ -150,6 +177,7 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
         .listen(_handleLine, onError: _handleOutputError);
     unawaited(
       process.exitCode.then((code) {
+        unawaited(_cleanup().then<void>((_) {}, onError: (_, _) {}));
         if (!_endpoint.isCompleted) {
           _endpoint.completeError(
             StateError('Runtime exited before listening (exit code $code).'),
@@ -164,6 +192,8 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
   final String password;
   final Process _process;
   WindowsJobObject? _job;
+  final Future<void> Function()? _cleanupCallback;
+  Future<void>? _cleanupFuture;
   final _lines = StreamController<String>.broadcast();
   final _endpoint = Completer<AiRuntimeEndpoint>();
   late final StreamSubscription<String> _stdoutSubscription;
@@ -223,8 +253,12 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
     }
     _job?.close();
     _job = null;
+    await _cleanup();
     await _stdoutSubscription.cancel();
     await _stderrSubscription.cancel();
     await _lines.close();
   }
+
+  Future<void> _cleanup() =>
+      _cleanupFuture ??= _cleanupCallback?.call() ?? Future<void>.value();
 }
