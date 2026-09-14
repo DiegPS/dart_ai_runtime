@@ -1,6 +1,6 @@
 name: air_ai_runtime
 description: Reusable Dart library for installing, supervising, and communicating with local OpenCode-compatible AI runtimes.
-version: 0.0.1
+version: 0.1.0
 publish_to: none
 
 environment:

@@ -6,18 +6,17 @@ import '../application/runtime_services.dart';
 import '../domain/artifact_models.dart';
 import '../domain/runtime_models.dart';
 import 'artifact_installer.dart';
-import 'http_artifact_downloader.dart';
 import 'pinned_runtime_catalog.dart';
 import 'runtime_storage.dart';
 
 class PinnedAiRuntimeInstaller implements AiRuntimeInstallService {
   PinnedAiRuntimeInstaller({
     required AiRuntimeStorage storage,
-    ArtifactDownloader? downloader,
+    required ArtifactDownloader downloader,
     this.developmentExecutables = const {},
   }) : _installer = ArtifactInstaller(
          sharedRoot: storage.sharedStoreRoot,
-         downloader: downloader ?? HttpArtifactDownloader(),
+         downloader: downloader,
          validator: _validateExecutable,
        );
 
