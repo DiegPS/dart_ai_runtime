@@ -7,8 +7,8 @@ import 'package:test/test.dart';
 void main() {
   for (final kind in AiRuntimeKind.values) {
     final variable = kind == AiRuntimeKind.openCode
-        ? 'AIR_AI_RUNTIME_TEST_OPENCODE_EXE'
-        : 'AIR_AI_RUNTIME_TEST_KILO_EXE';
+        ? 'DART_AI_RUNTIME_TEST_OPENCODE_EXE'
+        : 'DART_AI_RUNTIME_TEST_KILO_EXE';
     final executablePath = Platform.environment[variable];
 
     test(
@@ -37,8 +37,20 @@ void main() {
             workspaceDirectory: storage.workspace(kind).path,
           );
           try {
+            final firstEvent = (await client.connectEvents()).first.timeout(
+              const Duration(seconds: 10),
+            );
             final providers = await client.providers();
             expect(providers, isNotEmpty);
+            await client.authMethods();
+            final session = await client.createSession(
+              title: 'dart_ai_runtime integration test',
+            );
+            expect((await client.session(session.id)).id, session.id);
+            expect(await client.messages(session.id), isEmpty);
+            expect((await firstEvent).type, isNotEmpty);
+            await client.abort(session.id);
+            await client.deleteSession(session.id);
           } finally {
             client.dispose();
           }

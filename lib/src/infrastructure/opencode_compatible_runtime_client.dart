@@ -255,11 +255,18 @@ class OpenCodeCompatibleRuntimeClient
 
   static AiRuntimeEvent? _decodeEvent(StringBuffer data, String? eventType) {
     if (data.isEmpty) return null;
-    final decoded = jsonDecode(data.toString());
-    if (decoded is! Map) return null;
-    final map = Map<String, dynamic>.from(decoded);
-    if (!map.containsKey('type') && eventType != null) map['type'] = eventType;
-    return AiRuntimeEvent.fromJson(map);
+    try {
+      final decoded = jsonDecode(data.toString());
+      if (decoded is! Map) return null;
+      final map = Map<String, dynamic>.from(decoded);
+      if (!map.containsKey('type') && eventType != null) {
+        map['type'] = eventType;
+      }
+      return AiRuntimeEvent.fromJson(map);
+    } on FormatException {
+      // One malformed event must not terminate an otherwise healthy stream.
+      return null;
+    }
   }
 
   Future<Object?> _json(

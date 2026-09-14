@@ -1,0 +1,386 @@
+// ignore_for_file: use_null_aware_elements
+
+import 'dart:async';
+
+import 'package:dart_ai_runtime/dart_ai_runtime.dart';
+import 'package:test/test.dart';
+
+void main() {
+  late AiRuntimeSupervisor supervisor;
+  late _ProcessService processes;
+
+  setUp(() async {
+    processes = _ProcessService();
+    supervisor = AiRuntimeSupervisor(
+      installer: _Installer(),
+      processes: processes,
+      health: _Health(),
+    );
+    await supervisor.start(AiRuntimeKind.openCode);
+  });
+
+  tearDown(() => supervisor.dispose());
+
+  test('connects SSE before dispatching a prompt and streams once', () async {
+    final client = _RuntimeClient();
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      reconciliationInterval: const Duration(seconds: 5),
+    );
+    client.onPrompt = () {
+      expect(client.eventsConnected, isTrue);
+      scheduleMicrotask(() {
+        client.emit(
+          _event(
+            'message.updated',
+            messageId: 'assistant-1',
+            role: 'assistant',
+          ),
+        );
+        client.emit(
+          _event(
+            'message.part.delta',
+            messageId: 'assistant-1',
+            partId: 'part-1',
+            delta: 'Hello ',
+          ),
+        );
+        client.emit(
+          _event(
+            'message.part.updated',
+            messageId: 'assistant-1',
+            partId: 'part-1',
+            fullText: 'Hello world',
+          ),
+        );
+        client.emit(_event('message.completed', messageId: 'assistant-1'));
+      });
+    };
+
+    final result = await controller.sendAndWait(
+      text: 'Question',
+      providerId: 'test',
+      modelId: 'model',
+      systemPrompt: 'System',
+    );
+
+    expect(result, 'Hello world');
+    expect(controller.state.messages.last.content, 'Hello world');
+    expect(client.lastPrompt?.toolPermissions, {'*': false});
+    await controller.dispose();
+  });
+
+  test(
+    'ignores prior and user events when correlating the assistant',
+    () async {
+      final client = _RuntimeClient()
+        ..history = [
+          {
+            'info': {'id': 'old', 'role': 'assistant'},
+            'parts': [
+              {'type': 'text', 'text': 'old answer'},
+            ],
+          },
+        ];
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+        reconciliationInterval: const Duration(seconds: 5),
+      );
+      client.onPrompt = () => scheduleMicrotask(() {
+        client.emit(
+          _event('message.part.delta', messageId: 'old', delta: 'BAD'),
+        );
+        client.emit(
+          _event('message.updated', messageId: 'user-remote', role: 'user'),
+        );
+        client.emit(
+          _event('message.part.delta', messageId: 'user-remote', delta: 'BAD'),
+        );
+        client.emit(
+          _event('message.updated', messageId: 'new', role: 'assistant'),
+        );
+        client.emit(
+          _event('message.part.delta', messageId: 'new', delta: 'Good'),
+        );
+        client.emit(_event('message.completed', messageId: 'new'));
+      });
+
+      expect(
+        await controller.sendAndWait(
+          text: 'Repeated question',
+          providerId: 'test',
+          modelId: 'model',
+          systemPrompt: 'System',
+        ),
+        'Good',
+      );
+      await controller.dispose();
+    },
+  );
+
+  test('late events after abort cannot contaminate the next state', () async {
+    final client = _RuntimeClient();
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      reconciliationInterval: const Duration(seconds: 5),
+    );
+    await controller.sendMessage(
+      text: 'Long question',
+      providerId: 'test',
+      modelId: 'model',
+      systemPrompt: 'System',
+    );
+    await controller.abort();
+    client.emit(_event('message.part.delta', messageId: 'late', delta: 'BAD'));
+    client.emit(_event('message.completed', messageId: 'late'));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(client.abortCount, 1);
+    expect(controller.state.streamedText, isEmpty);
+    expect(
+      controller.state.messages.where((item) => item.role == 'assistant'),
+      isEmpty,
+    );
+    await controller.dispose();
+  });
+
+  test('runtime restart creates a new client and session', () async {
+    final clients = <_RuntimeClient>[];
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) {
+        final client = _RuntimeClient();
+        clients.add(client);
+        return client;
+      },
+      reconciliationInterval: const Duration(seconds: 5),
+    );
+    // Force creation through the first turn and cancel it.
+    await controller.sendMessage(
+      text: 'First',
+      providerId: 'test',
+      modelId: 'model',
+      systemPrompt: 'System',
+    );
+    await controller.abort();
+    expect(controller.state.sessionId, isNotNull);
+
+    await supervisor.restart();
+    await controller.sendMessage(
+      text: 'Second',
+      providerId: 'test',
+      modelId: 'model',
+      systemPrompt: 'System',
+    );
+    expect(clients, hasLength(2));
+    expect(clients.first.disposed, isTrue);
+    expect(controller.state.sessionId, isNotNull);
+    await controller.abort();
+    await controller.dispose();
+  });
+
+  test(
+    'restores bounded history as untrusted context for a new session',
+    () async {
+      final client = _RuntimeClient();
+      final store = _HistoryStore([
+        AiChatMessage(
+          id: 'old-user',
+          role: 'user',
+          content: 'Earlier question',
+          timestamp: DateTime.utc(2026),
+        ),
+        AiChatMessage(
+          id: 'old-assistant',
+          role: 'assistant',
+          content: 'Earlier answer',
+          timestamp: DateTime.utc(2026),
+        ),
+      ]);
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+        historyStore: store,
+        reconciliationInterval: const Duration(seconds: 5),
+      );
+      await controller.sendMessage(
+        text: 'Current question',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'System',
+      );
+      expect(client.lastPrompt?.text, contains('untrusted data'));
+      expect(client.lastPrompt?.text, contains('Earlier answer'));
+      expect(client.lastPrompt?.text, endsWith('Current question'));
+      await controller.abort();
+      await controller.dispose();
+    },
+  );
+}
+
+AiRuntimeEvent _event(
+  String type, {
+  String? messageId,
+  String? partId,
+  String? role,
+  String? delta,
+  String? fullText,
+}) => AiRuntimeEvent.fromJson({
+  'type': type,
+  'properties': {
+    'sessionID': 'session-1',
+    if (messageId != null) 'messageID': messageId,
+    if (partId != null) 'partID': partId,
+    if (role != null) 'role': role,
+    if (delta != null) 'delta': delta,
+    if (delta != null) 'field': 'text',
+    if (fullText != null)
+      'part': {
+        'id': partId,
+        'messageID': messageId,
+        'type': 'text',
+        'text': fullText,
+      },
+  },
+});
+
+class _RuntimeClient implements AiRuntimeClient {
+  final _events = StreamController<AiRuntimeEvent>.broadcast();
+  List<Map<String, dynamic>> history = [];
+  void Function()? onPrompt;
+  bool eventsConnected = false;
+  int abortCount = 0;
+  bool disposed = false;
+  AiPrompt? lastPrompt;
+
+  void emit(AiRuntimeEvent event) => _events.add(event);
+
+  @override
+  Future<void> abort(String sessionId) async => abortCount++;
+
+  @override
+  Future<List<AiAuthMethod>> authMethods() async => const [];
+
+  @override
+  Future<Stream<AiRuntimeEvent>> connectEvents() async {
+    eventsConnected = true;
+    return _events.stream;
+  }
+
+  @override
+  Future<AiSession> createSession({String? title}) async =>
+      const AiSession(id: 'session-1');
+
+  @override
+  Future<void> deleteSession(String sessionId) async {}
+
+  @override
+  void dispose() {
+    disposed = true;
+    _events.close();
+  }
+
+  @override
+  Stream<AiRuntimeEvent> events() => _events.stream;
+
+  @override
+  Future<List<Map<String, dynamic>>> messages(String sessionId) async =>
+      history;
+
+  @override
+  Future<void> promptAsync(String sessionId, AiPrompt prompt) async {
+    lastPrompt = prompt;
+    onPrompt?.call();
+  }
+
+  @override
+  Future<List<AiProviderInfo>> providers() async => const [];
+
+  @override
+  Future<AiSession> session(String sessionId) async => AiSession(id: sessionId);
+}
+
+class _Installer implements AiRuntimeInstallService {
+  final runtime = const PinnedAiRuntimeCatalog().definition(
+    AiRuntimeKind.openCode,
+  );
+
+  @override
+  AiRuntimeDefinition definition(AiRuntimeKind kind) => runtime;
+
+  @override
+  Future<AiRuntimeInstallation> install(
+    AiRuntimeKind kind, {
+    ArtifactDownloadCancellation? cancellation,
+    void Function(ArtifactInstallProgress progress)? onProgress,
+  }) async => AiRuntimeInstallation(definition: runtime, directoryPath: '.');
+
+  @override
+  Future<AiRuntimeInstallation?> installed(AiRuntimeKind kind) async =>
+      AiRuntimeInstallation(definition: runtime, directoryPath: '.');
+}
+
+class _ProcessService implements AiRuntimeProcessService {
+  int pid = 0;
+
+  @override
+  Future<AiRuntimeProcessHandle> start(
+    AiRuntimeInstallation installation, {
+    required String password,
+  }) async => _Process(++pid, password);
+}
+
+class _Process implements AiRuntimeProcessHandle {
+  _Process(int pid, String password)
+    : endpoint = AiRuntimeEndpoint(
+        kind: AiRuntimeKind.openCode,
+        baseUri: Uri.parse('http://127.0.0.1:${9000 + pid}'),
+        username: 'opencode',
+        password: password,
+        pid: pid,
+      );
+
+  final _exit = Completer<int>();
+
+  @override
+  final AiRuntimeEndpoint endpoint;
+
+  @override
+  Future<int> get exitCode => _exit.future;
+
+  @override
+  Stream<String> get logs => const Stream.empty();
+
+  @override
+  Future<void> stop() async {
+    if (!_exit.isCompleted) _exit.complete(0);
+  }
+}
+
+class _Health implements AiRuntimeHealthService {
+  @override
+  Future<AiRuntimeHealth> waitUntilReady(
+    AiRuntimeEndpoint endpoint, {
+    Duration timeout = const Duration(seconds: 25),
+  }) async => const AiRuntimeHealth(healthy: true);
+}
+
+class _HistoryStore implements AiConversationHistoryStore {
+  _HistoryStore(this.messages);
+
+  List<AiChatMessage> messages;
+
+  @override
+  Future<void> clear() async => messages = [];
+
+  @override
+  Future<List<AiChatMessage>> load() async => messages;
+
+  @override
+  Future<void> save(List<AiChatMessage> messages) async {
+    this.messages = messages;
+  }
+}

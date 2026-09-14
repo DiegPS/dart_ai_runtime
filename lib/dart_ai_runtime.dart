@@ -1,10 +1,16 @@
 /// Reusable local AI runtime integration for Dart applications.
 library;
 
+export 'src/application/conversation_controller.dart';
 export 'src/application/runtime_client.dart';
+export 'src/application/model_selection_controller.dart';
+export 'src/application/provider_connection_controller.dart';
 export 'src/application/runtime_services.dart';
 export 'src/application/runtime_supervisor.dart';
 export 'src/domain/artifact_models.dart';
+export 'src/domain/conversation_models.dart';
+export 'src/domain/model_selection_models.dart';
+export 'src/domain/provider_connection_models.dart';
 export 'src/domain/runtime_api_models.dart';
 export 'src/domain/runtime_models.dart';
 export 'src/infrastructure/artifact_installer.dart';
