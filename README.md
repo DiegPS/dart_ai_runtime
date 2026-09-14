@@ -17,6 +17,15 @@ Airstream, Flutter widgets, Riverpod, or application preferences.
 - Health checks, provider/model discovery, OAuth/API-key endpoints, sessions,
   asynchronous prompts, cancellation, history, and SSE events.
 - A supervisor that guarantees only one active runtime per host instance.
+- Restart-safe conversation orchestration with SSE correlation and polling
+  reconciliation.
+- Framework-neutral provider authentication and safe model selection
+  controllers.
+
+Downloads are deliberately dependency-injected through `ArtifactDownloader`.
+The package includes a simple resumable HTTP implementation, but host
+applications may provide background, platform-native, or enterprise download
+implementations without changing the runtime layer.
 
 ## Storage contract
 
@@ -84,6 +93,18 @@ final client = OpenCodeCompatibleRuntimeClient(
 final providers = await client.providers();
 ```
 
+For complete conversation handling, construct `AiConversationController` with
+the supervisor and a client factory. It opens SSE before dispatching, rejects
+events from previous turns, reconciles missed events through the message API,
+invalidates sessions after a process restart, and discards late events after
+cancellation. UI frameworks consume its `states` stream.
+
+`AiModelSelectionController` never chooses a paid model automatically and
+prefers `kilo/kilo-auto/free` when available. `AiProviderConnectionController`
+validates OAuth responses and confirms every connection or disconnection
+against the runtime provider catalog. Persistence is supplied by host-owned
+`AiModelSelectionStore` and `AiConversationHistoryStore` adapters.
+
 The host owns `client`, `health`, `downloader`, and `supervisor` and must dispose
 them when its application scope ends.
 
@@ -110,8 +131,8 @@ dart test
 Real process checks are opt-in and never perform inference:
 
 ```powershell
-$env:AIR_AI_RUNTIME_TEST_OPENCODE_EXE='C:\path\to\opencode.exe'
-$env:AIR_AI_RUNTIME_TEST_KILO_EXE='C:\path\to\kilo.exe'
+$env:DART_AI_RUNTIME_TEST_OPENCODE_EXE='C:\path\to\opencode.exe'
+$env:DART_AI_RUNTIME_TEST_KILO_EXE='C:\path\to\kilo.exe'
 dart test test\integration\live_runtime_process_test.dart
 ```
 

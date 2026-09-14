@@ -20,6 +20,19 @@ dependencies. Application interfaces define the lifecycle and client ports.
 Infrastructure adapters implement verified artifacts, native processes, and
 the OpenCode-compatible protocol.
 
+Framework-neutral application controllers sit above that protocol:
+
+- `AiConversationController` owns session continuity, SSE correlation,
+  cancellation generations, polling reconciliation, and endpoint changes.
+- `AiModelSelectionController` owns catalog validation and prevents implicit
+  selection of paid models.
+- `AiProviderConnectionController` coordinates API-key and OAuth flows and
+  verifies their outcome against the provider catalog.
+
+Persistence and downloading remain injected ports. A Flutter host may use
+SharedPreferences or a background downloader without introducing Flutter into
+the runtime package.
+
 The package does not own conversation presentation, provider-selection policy,
 user consent, application settings, prompt construction, or business context.
 Those responsibilities remain in Airstream, GodSense, or another host.
