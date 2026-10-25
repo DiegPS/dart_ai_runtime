@@ -210,6 +210,9 @@ dart test test\integration\live_neutral_session_test.dart
 
 ## Third-party runtimes
 
+The generated-plugin regression tests require Node.js 22 or newer on `PATH`.
+They execute the actual JavaScript hooks without contacting an AI provider.
+
 OpenCode and Kilo are independent projects distributed under the MIT License.
 Applications using this package must surface and preserve their upstream
 copyright and license notices. `dart_ai_runtime` is not affiliated with or

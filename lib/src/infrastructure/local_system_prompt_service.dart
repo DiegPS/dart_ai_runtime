@@ -11,7 +11,8 @@ import 'runtime_storage.dart';
 ///
 /// Prompt files and generated plugin configuration live below the private
 /// application root in [AiRuntimeStorage]. They are never placed in the shared
-/// runtime store. The plugin deletes each prompt immediately after reading it.
+/// runtime store. The plugin consumes each prompt file and keeps the trusted
+/// value in process memory for repeated provider hooks within that session.
 class LocalAiRuntimeSystemPromptService
     implements AiRuntimeSystemPromptService {
   LocalAiRuntimeSystemPromptService(
@@ -256,32 +257,66 @@ class LocalAiRuntimeSystemPromptService
 
   static String _pluginSource(AiRuntimeKind kind) {
     const hook = r'''
-import {readFile, unlink} from "node:fs/promises";
+import {readFile, rename, unlink} from "node:fs/promises";
 
 const validSessionId = /^[A-Za-z0-9._-]{1,200}$/;
 const promptUrl = (sessionID) =>
   new URL(`./system_prompts/${sessionID}.json`, import.meta.url);
+const prompts = new Map();
+const pending = new Map();
+let sequence = 0;
+
+const loadPrompt = (sessionID) => {
+  const previous = pending.get(sessionID) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(async () => {
+    const url = promptUrl(sessionID);
+    const claimed = new URL(`${url.href}.${process.pid}.${sequence++}.tmp`);
+    try {
+      // Claim only this version: a later host write must never be unlinked by
+      // an earlier hook. Retries reuse the last trusted value in memory.
+      await rename(url, claimed);
+    } catch (error) {
+      if (error.code === "ENOENT" && prompts.has(sessionID)) {
+        return prompts.get(sessionID);
+      }
+      throw error;
+    }
+    try {
+      prompts.delete(sessionID);
+      const payload = JSON.parse(await readFile(claimed, "utf8"));
+      if (payload?.version !== 1 ||
+          payload?.sessionId !== sessionID ||
+          typeof payload?.system !== "string" ||
+          payload.system.trim().length === 0) {
+        throw new Error("Invalid or missing host system prompt");
+      }
+      prompts.set(sessionID, payload.system);
+      return payload.system;
+    } finally {
+      await unlink(claimed).catch(() => {});
+    }
+  });
+  pending.set(sessionID, current);
+  return current.finally(() => {
+    if (pending.get(sessionID) === current) pending.delete(sessionID);
+  });
+};
 
 const server = async () => ({
+  event: async ({event}) => {
+    if (event.type !== "session.deleted") return;
+    const sessionID = event.properties?.info?.id;
+    if (!validSessionId.test(sessionID ?? "")) return;
+    await pending.get(sessionID)?.catch(() => {});
+    prompts.delete(sessionID);
+  },
   "experimental.chat.system.transform": async (input, output) => {
     const sessionID = input.sessionID;
     if (!validSessionId.test(sessionID)) {
       throw new Error("Invalid runtime session ID");
     }
-    const url = promptUrl(sessionID);
-    let payload;
-    try {
-      payload = JSON.parse(await readFile(url, "utf8"));
-    } finally {
-      await unlink(url).catch(() => {});
-    }
-    if (payload?.version !== 1 ||
-        payload?.sessionId !== sessionID ||
-        typeof payload?.system !== "string" ||
-        payload.system.trim().length === 0) {
-      throw new Error("Invalid or missing host system prompt");
-    }
-    output.system.splice(0, output.system.length, payload.system);
+    const system = await loadPrompt(sessionID);
+    output.system.splice(0, output.system.length, system);
   },
 });
 ''';

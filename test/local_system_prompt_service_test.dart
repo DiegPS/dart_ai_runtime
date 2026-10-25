@@ -25,6 +25,62 @@ void main() {
   });
 
   for (final kind in AiRuntimeKind.values) {
+    test(
+      'generated ${kind.name} hook supports retries and new turns',
+      () async {
+        await service.prepare(kind);
+        final managed = Directory(
+          p.join(storage.config(kind).path, kind.id, 'dart_ai_runtime'),
+        );
+        final module = File(p.join(managed.path, 'hook.mjs'));
+        await File(p.join(managed.path, 'neutral_system.js')).copy(module.path);
+        await service.setSystemPrompt(kind, 'ses_one', 'First trusted context');
+        await service.setSystemPrompt(kind, 'ses_two', 'Independent context');
+        final script = File(p.join(root.path, 'exercise-hook.mjs'));
+        await script.writeAsString(r'''
+import assert from 'node:assert/strict';
+import {writeFile, readdir} from 'node:fs/promises';
+import {join} from 'node:path';
+const module = await import(process.argv[2]);
+const server = module.default?.server ?? module.DartAiRuntimeNeutralSystem;
+const hooks = await server();
+const transform = hooks['experimental.chat.system.transform'];
+const directory = process.argv[3];
+const invoke = async (sessionID) => {
+  const output = {system: ['Upstream prompt']};
+  await transform({sessionID}, output);
+  return output.system;
+};
+assert.deepEqual(await invoke('ses_one'), ['First trusted context']);
+assert.deepEqual(await invoke('ses_one'), ['First trusted context']);
+assert.deepEqual(await invoke('ses_two'), ['Independent context']);
+assert.deepEqual(await readdir(directory), []);
+await writeFile(join(directory, 'ses_one.json'), JSON.stringify({version: 1, sessionId: 'ses_one', system: 'Updated trusted context'}));
+const concurrent = await Promise.all(Array.from({length: 20}, () => invoke('ses_one')));
+for (const result of concurrent) assert.deepEqual(result, ['Updated trusted context']);
+assert.deepEqual(await invoke('ses_two'), ['Independent context']);
+await assert.rejects(invoke('ses_unknown'));
+await assert.rejects(invoke('../outside'));
+await writeFile(join(directory, 'ses_one.json'), JSON.stringify({version: 1, sessionId: 'wrong-session', system: 'Untrusted'}));
+await assert.rejects(invoke('ses_one'), /Invalid or missing/);
+await assert.rejects(invoke('ses_one'));
+await hooks.event({event: {type: 'session.deleted', properties: {info: {id: 'ses_two'}}}});
+await assert.rejects(invoke('ses_two'));
+assert.deepEqual(await readdir(directory), []);
+''');
+        final result = await Process.run('node', [
+          script.path,
+          module.uri.toString(),
+          p.join(managed.path, 'system_prompts'),
+        ]);
+        expect(
+          result.exitCode,
+          0,
+          reason: '${result.stdout}\n${result.stderr}',
+        );
+      },
+    );
+
     test('prepares a managed neutral ${kind.name} configuration', () async {
       await service.prepare(kind);
 
@@ -56,7 +112,7 @@ void main() {
       ).readAsString();
       expect(plugin, contains('experimental.chat.system.transform'));
       expect(plugin, contains('output.system.splice'));
-      expect(plugin, contains('await unlink(url)'));
+      expect(plugin, contains('await unlink(claimed)'));
       if (kind == AiRuntimeKind.openCode) {
         expect(plugin, contains('export const DartAiRuntimeNeutralSystem'));
       } else {

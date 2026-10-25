@@ -1,3 +1,12 @@
+## 0.3.1
+
+- Preserve the trusted prompt in memory when a provider invokes the system hook
+  repeatedly; consume updated host prompts atomically for subsequent turns.
+- Serialize concurrent hooks per session and clear cached prompts on session
+  deletion. Invalid or missing prompts still fail closed.
+- Exercise the generated OpenCode and Kilo JavaScript hooks using Node.js,
+  including concurrent retries, new telemetry, isolation and cleanup.
+
 ## 0.3.0
 
 - Add managed neutral agents and trusted system-prompt plugins for OpenCode and
