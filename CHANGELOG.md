@@ -1,3 +1,14 @@
+## 0.3.6
+
+- Treat reconciliation attempts as an inactivity budget: correlated text or
+  reasoning progress and advancing polling snapshots keep an active response
+  alive. Reasoning content remains excluded from visible answers.
+- Bound every turn with a configurable three-minute total response deadline.
+  Timeout cancels and retires its runtime context; heartbeat and stale-message
+  events cannot postpone inactivity detection.
+- Retire local context even when runtime cancellation fails, preserving visible
+  cancellation metadata and excluding unfinished turns from future prompts.
+
 ## 0.3.5
 
 - Await event subscription cleanup before closing its HTTP client. Expected

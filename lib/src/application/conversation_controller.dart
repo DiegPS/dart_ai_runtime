@@ -26,6 +26,7 @@ class AiConversationController {
     AiConversationHistoryPromptBuilder? historyPromptBuilder,
     this.reconciliationInterval = const Duration(milliseconds: 600),
     this.reconciliationAttempts = 100,
+    this.responseTimeout = const Duration(minutes: 3),
   }) : _supervisor = supervisor,
        _clientFactory = clientFactory,
        _historyStore = historyStore,
@@ -44,6 +45,7 @@ class AiConversationController {
   final AiConversationHistoryPromptBuilder _historyPromptBuilder;
   final Duration reconciliationInterval;
   final int reconciliationAttempts;
+  final Duration responseTimeout;
   final _states = StreamController<AiConversationState>.broadcast();
   AiConversationState _state = const AiConversationState();
   late final Future<void> _historyRestore;
@@ -51,6 +53,8 @@ class AiConversationController {
   StreamSubscription<AiRuntimeEvent>? _eventSubscription;
   Future<void> _closingEvents = Future<void>.value();
   Timer? _reconciliationTimer;
+  Timer? _responseDeadline;
+  int _responseActivity = 0;
   AiRuntimeEndpoint? _cachedEndpoint;
   AiRuntimeClient? _client;
   Completer<String>? _pendingResponse;
@@ -262,6 +266,7 @@ class AiConversationController {
     _partTypes.clear();
     _userMessageIds.clear();
     _assistantMessageId = null;
+    _responseActivity = 0;
     _eventSubscription = events.listen(
       (event) {
         if (!_current(generation)) return;
@@ -308,8 +313,16 @@ class AiConversationController {
         if (rawPart is Map && rawPart['type'] is String) {
           _partTypes[partId] = rawPart['type'] as String;
         }
-        if (_partTypes[partId] != null && _partTypes[partId] != 'text') return;
         final delta = event.textDelta;
+        if (messageId != null &&
+            messageId == _assistantMessageId &&
+            ((delta?.isNotEmpty ?? false) ||
+                rawPart is Map &&
+                    rawPart['text'] is String &&
+                    (rawPart['text'] as String).isNotEmpty)) {
+          _responseActivity++;
+        }
+        if (_partTypes[partId] != null && _partTypes[partId] != 'text') return;
         if (delta != null && delta.isNotEmpty) {
           _parts[partId] = (_parts[partId] ?? '') + delta;
           _publishStream();
@@ -346,7 +359,13 @@ class AiConversationController {
   ) {
     _reconciliationTimer?.cancel();
     var attempts = 0;
+    var activity = _responseActivity;
     var reading = false;
+    _responseDeadline?.cancel();
+    _responseDeadline = Timer(
+      responseTimeout,
+      () => _timeoutResponse(generation),
+    );
     _reconciliationTimer = Timer.periodic(reconciliationInterval, (
       timer,
     ) async {
@@ -357,16 +376,13 @@ class AiConversationController {
         return;
       }
       if (reading) return;
+      if (activity != _responseActivity) {
+        activity = _responseActivity;
+        attempts = 0;
+      }
       if (++attempts > reconciliationAttempts) {
         timer.cancel();
-        final error = TimeoutException(
-          'The runtime did not complete the response.',
-        );
-        _stopStreaming();
-        _emit(
-          _state.copyWith(status: AiConversationStatus.error, error: error),
-        );
-        _completePendingError(error);
+        _timeoutResponse(generation);
         return;
       }
       try {
@@ -384,6 +400,7 @@ class AiConversationController {
         final text = _assistantTextAfter(matching, 0);
         if (text != null && text.isNotEmpty) {
           if (text.length >= _state.streamedText.length) {
+            if (text != _state.streamedText) _responseActivity++;
             _emit(_state.copyWith(streamedText: text));
           }
           if (_assistantFinishedAfter(matching, 0)) {
@@ -396,6 +413,37 @@ class AiConversationController {
         reading = false;
       }
     });
+  }
+
+  void _timeoutResponse(int generation) {
+    if (!_current(generation) || _turnFinished) return;
+    unawaited(_retireTimedOutTurn());
+  }
+
+  Future<void> _retireTimedOutTurn() async {
+    final error = TimeoutException(
+      'The runtime did not complete the response.',
+    );
+    final pending = _pendingResponse;
+    _pendingResponse = null;
+    final retiringGeneration = _generation + 1;
+    try {
+      await abort();
+    } catch (_) {
+      // Even if the runtime cannot acknowledge cancellation, the next turn
+      // must not reuse the timed-out context.
+    } finally {
+      if (_current(retiringGeneration)) {
+        _emit(
+          _state.copyWith(
+            status: AiConversationStatus.error,
+            error: error,
+            clearSession: true,
+          ),
+        );
+      }
+      if (pending != null && !pending.isCompleted) pending.completeError(error);
+    }
   }
 
   /// Cancels the active turn and retires its runtime context while retaining
@@ -426,51 +474,58 @@ class AiConversationController {
         // A new session still isolates its context if old-session cleanup fails.
       }
       if (!_current(generation)) return;
-      final partial = _state.streamedText.trim();
-      final userIndex = _state.messages.lastIndexWhere(
-        (message) => message.role == 'user',
-      );
-      final retained = [
-        for (var index = 0; index < _state.messages.length; index++)
-          if (index != userIndex)
-            _state.messages[index]
-          else
-            AiChatMessage(
-              id: _state.messages[index].id,
-              role: _state.messages[index].role,
-              content: _state.messages[index].content,
-              timestamp: _state.messages[index].timestamp,
-              isCancelled: true,
-            ),
-      ];
-      final messages = partial.isEmpty
-          ? retained
-          : [
-              ...retained,
-              AiChatMessage(
-                id: 'assistant-${_now().microsecondsSinceEpoch}',
-                role: 'assistant',
-                content: '$partial [Cancelled]',
-                timestamp: _now(),
-                isCancelled: true,
-              ),
-            ];
-      _emit(
-        _state.copyWith(
-          messages: messages,
-          clearSession: true,
-          streamedText: '',
-          status: AiConversationStatus.idle,
-        ),
-      );
-      _persistHistory();
+      _retireCancelledTurn();
       _completePendingError(StateError('Generation cancelled.'));
     } catch (error) {
       if (!_current(generation)) return;
-      _emit(_state.copyWith(status: AiConversationStatus.error, error: error));
+      _retireCancelledTurn(status: AiConversationStatus.error, error: error);
       _completePendingError(error);
       rethrow;
     }
+  }
+
+  void _retireCancelledTurn({
+    AiConversationStatus status = AiConversationStatus.idle,
+    Object? error,
+  }) {
+    final partial = _state.streamedText.trim();
+    final userIndex = _state.messages.lastIndexWhere(
+      (message) => message.role == 'user',
+    );
+    final retained = [
+      for (var index = 0; index < _state.messages.length; index++)
+        if (index != userIndex)
+          _state.messages[index]
+        else
+          AiChatMessage(
+            id: _state.messages[index].id,
+            role: _state.messages[index].role,
+            content: _state.messages[index].content,
+            timestamp: _state.messages[index].timestamp,
+            isCancelled: true,
+          ),
+    ];
+    _emit(
+      _state.copyWith(
+        messages: [
+          ...retained,
+          if (partial.isNotEmpty)
+            AiChatMessage(
+              id: 'assistant-${_now().microsecondsSinceEpoch}',
+              role: 'assistant',
+              content: '$partial [Cancelled]',
+              timestamp: _now(),
+              isCancelled: true,
+            ),
+        ],
+        clearSession: true,
+        streamedText: '',
+        status: status,
+        error: error,
+        clearError: error == null,
+      ),
+    );
+    _persistHistory();
   }
 
   /// Deletes the runtime session and clears local conversation history.
@@ -520,6 +575,8 @@ class AiConversationController {
 
   void _stopStreaming() {
     _cancelEvents();
+    _responseDeadline?.cancel();
+    _responseDeadline = null;
     _reconciliationTimer?.cancel();
     _reconciliationTimer = null;
     _parts.clear();

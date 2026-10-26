@@ -1,6 +1,6 @@
 name: dart_ai_runtime
 description: Reusable Dart library for installing, supervising, and communicating with local OpenCode-compatible AI runtimes.
-version: 0.3.5
+version: 0.3.6
 repository: https://github.com/DiegPS/dart_ai_runtime
 publish_to: none
 

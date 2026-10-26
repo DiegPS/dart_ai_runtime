@@ -105,8 +105,16 @@ events from previous turns, reconciles missed events through the message API,
 invalidates sessions after a process restart, and discards late events after
 cancellation. UI frameworks consume its `states` stream.
 
+The default inactivity budget is 100 reconciliation intervals of 600 ms.
+Correlated text or reasoning progress and advancing polling snapshots reset
+that budget; heartbeats and stale messages do not. Reasoning is never included
+in the visible answer. `responseTimeout` independently limits a turn to three
+minutes by default. A timeout retires the session and marks the unfinished
+turn cancelled locally, even if the runtime cannot acknowledge cancellation.
+`sendAndWait(timeout: ...)` retains its separate caller-supplied deadline.
+
 The controller creates one runtime session lazily and reuses it for every
-consecutive prompt until `clear`, a runtime restart, or disposal. Reusing the
+consecutive prompt until cancellation, timeout, `clear`, a runtime restart, or disposal. Reusing the
 session avoids another runtime start, health check, client setup, and session
 creation. The model still processes its conversation history for each turn, so
 the exact latency improvement depends on provider-side prompt caching and the

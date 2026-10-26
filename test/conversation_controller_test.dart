@@ -21,6 +21,282 @@ void main() {
 
   tearDown(() => supervisor.dispose());
 
+  for (final partKind in ['text', 'reasoning']) {
+    test(
+      'active $partKind progress outlives the idle reconciliation budget',
+      () async {
+        final client = _RuntimeClient();
+        final controller = AiConversationController(
+          supervisor: supervisor,
+          clientFactory: (_) => client,
+          reconciliationInterval: const Duration(milliseconds: 20),
+          reconciliationAttempts: 3,
+        );
+        addTearDown(controller.dispose);
+        final response = controller
+            .sendAndWait(
+              text: 'Synthetic question',
+              providerId: 'test',
+              modelId: 'model',
+              systemPrompt: 'System',
+              timeout: const Duration(seconds: 2),
+            )
+            .then<Object>((value) => value, onError: (Object error) => error);
+        while (client.lastPrompt == null) {
+          await Future<void>.delayed(Duration.zero);
+        }
+        client.emit(
+          _event('message.updated', messageId: 'current', role: 'assistant'),
+        );
+        client.emit(
+          AiRuntimeEvent.fromJson({
+            'type': 'message.part.updated',
+            'properties': {
+              'sessionID': 'session-1',
+              'part': {
+                'id': 'progress',
+                'messageID': 'current',
+                'type': partKind,
+                'text': '',
+              },
+            },
+          }),
+        );
+        for (var index = 0; index < 10; index++) {
+          await Future<void>.delayed(const Duration(milliseconds: 15));
+          client.emit(
+            _event(
+              'message.part.delta',
+              messageId: 'current',
+              partId: 'progress',
+              delta: 'x',
+            ),
+          );
+          if (partKind == 'reasoning') {
+            expect(controller.state.streamedText, isEmpty);
+          }
+        }
+        client.emit(
+          _event(
+            'message.part.updated',
+            messageId: 'current',
+            partId: 'answer',
+            fullText: 'Visible answer',
+          ),
+        );
+        client.emit(_event('message.completed', messageId: 'current'));
+        expect(
+          await response,
+          partKind == 'text' ? 'xxxxxxxxxxVisible answer' : 'Visible answer',
+        );
+      },
+    );
+  }
+
+  for (final kind in ['heartbeat', 'stale-assistant']) {
+    test(
+      '$kind events cannot postpone idle timeout and retired context is not reused',
+      () async {
+        final client = _RuntimeClient();
+        final controller = AiConversationController(
+          supervisor: supervisor,
+          clientFactory: (_) => client,
+          reconciliationInterval: const Duration(milliseconds: 20),
+          reconciliationAttempts: 3,
+          responseTimeout: const Duration(seconds: 1),
+        );
+        addTearDown(controller.dispose);
+        Timer? noise;
+        client.onPrompt = () {
+          noise = Timer.periodic(const Duration(milliseconds: 10), (_) {
+            client.emit(
+              kind == 'heartbeat'
+                  ? _event('server.heartbeat')
+                  : AiRuntimeEvent.fromJson({
+                      'type': 'message.part.delta',
+                      'properties': {
+                        'sessionID': 'session-1',
+                        'messageID': 'stale',
+                        'parentID': 'old-question',
+                        'role': 'assistant',
+                        'partID': 'old-part',
+                        'field': 'text',
+                        'delta': 'ignored',
+                      },
+                    }),
+            );
+          });
+        };
+        final clock = Stopwatch()..start();
+        final response = await controller
+            .sendAndWait(
+              text: 'Timed-out question',
+              providerId: 'test',
+              modelId: 'model',
+              systemPrompt: 'System',
+            )
+            .then<Object>((value) => value, onError: (Object error) => error);
+        noise?.cancel();
+        expect(response, isA<TimeoutException>());
+        expect(clock.elapsed, lessThan(const Duration(seconds: 1)));
+        expect(client.abortCount, 1);
+        expect(controller.state.sessionId, isNull);
+        expect(controller.state.messages.single.isCancelled, isTrue);
+        client.onPrompt = () => scheduleMicrotask(() {
+          client.emit(
+            _event(
+              'message.updated',
+              sessionId: 'session-2',
+              messageId: 'next',
+              role: 'assistant',
+            ),
+          );
+          client.emit(
+            _event(
+              'message.part.updated',
+              sessionId: 'session-2',
+              messageId: 'next',
+              partId: 'answer',
+              fullText: 'Next answer',
+            ),
+          );
+          client.emit(
+            _event(
+              'message.completed',
+              sessionId: 'session-2',
+              messageId: 'next',
+            ),
+          );
+        });
+        expect(
+          await controller.sendAndWait(
+            text: 'Next question',
+            providerId: 'test',
+            modelId: 'model',
+            systemPrompt: 'System',
+          ),
+          'Next answer',
+        );
+        expect(client.createSessionCount, 2);
+        expect(client.lastPrompt!.text, isNot(contains('Timed-out question')));
+      },
+    );
+  }
+
+  test('continuous progress still obeys the total response deadline', () async {
+    final client = _RuntimeClient();
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      reconciliationInterval: const Duration(milliseconds: 20),
+      reconciliationAttempts: 3,
+      responseTimeout: const Duration(milliseconds: 100),
+    );
+    addTearDown(controller.dispose);
+    Timer? progress;
+    client.onPrompt = () {
+      client.emit(
+        _event('message.updated', messageId: 'current', role: 'assistant'),
+      );
+      progress = Timer.periodic(const Duration(milliseconds: 10), (_) {
+        client.emit(
+          _event(
+            'message.part.delta',
+            messageId: 'current',
+            partId: 'answer',
+            delta: 'x',
+          ),
+        );
+      });
+    };
+    final response = await controller
+        .sendAndWait(
+          text: 'Question',
+          providerId: 'test',
+          modelId: 'model',
+          systemPrompt: 'System',
+        )
+        .then<Object>((value) => value, onError: (Object error) => error);
+    progress?.cancel();
+    expect(response, isA<TimeoutException>());
+    expect(client.abortCount, 1);
+    expect(controller.state.status, AiConversationStatus.error);
+    expect(controller.state.sessionId, isNull);
+    expect(controller.state.messages.last.isCancelled, isTrue);
+  });
+
+  test('timeout retires local context even if runtime abort fails', () async {
+    final client = _RuntimeClient()
+      ..abortFailure = StateError('Synthetic abort failure');
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      reconciliationInterval: const Duration(milliseconds: 5),
+      reconciliationAttempts: 2,
+    );
+    addTearDown(controller.dispose);
+    final response = await controller
+        .sendAndWait(
+          text: 'Question',
+          providerId: 'test',
+          modelId: 'model',
+          systemPrompt: 'System',
+        )
+        .then<Object>((value) => value, onError: (Object error) => error);
+    expect(response, isA<TimeoutException>());
+    expect(controller.state.sessionId, isNull);
+    expect(controller.state.messages.single.isCancelled, isTrue);
+  });
+
+  test(
+    'advancing polling snapshots outlive the idle reconciliation budget',
+    () async {
+      final client = _RuntimeClient();
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+        reconciliationInterval: const Duration(milliseconds: 20),
+        reconciliationAttempts: 3,
+      );
+      addTearDown(controller.dispose);
+      Timer? updates;
+      client.onPrompt = () {
+        var size = 0;
+        updates = Timer.periodic(const Duration(milliseconds: 15), (timer) {
+          size++;
+          client.history = [
+            {
+              'info': {
+                'id': 'current',
+                'role': 'assistant',
+                'parentID': client.lastPrompt!.messageId,
+                if (size == 10) 'finish': 'stop',
+              },
+              'parts': [
+                {'type': 'text', 'text': 'x' * size},
+              ],
+            },
+          ];
+          if (size == 10) timer.cancel();
+        });
+      };
+      try {
+        expect(
+          await controller.sendAndWait(
+            text: 'Question',
+            providerId: 'test',
+            modelId: 'model',
+            systemPrompt: 'System',
+            timeout: const Duration(seconds: 2),
+          ),
+          'xxxxxxxxxx',
+        );
+      } finally {
+        updates?.cancel();
+      }
+    },
+  );
+
   test('connects SSE before dispatching a prompt and streams once', () async {
     final client = _RuntimeClient();
     final controller = AiConversationController(
@@ -644,6 +920,7 @@ class _RuntimeClient implements AiRuntimeClient {
   void Function()? onPrompt;
   bool eventsConnected = false;
   int abortCount = 0;
+  Object? abortFailure;
   bool disposed = false;
   AiPrompt? lastPrompt;
   final List<AiPrompt> prompts = [];
@@ -654,7 +931,10 @@ class _RuntimeClient implements AiRuntimeClient {
   void emit(AiRuntimeEvent event) => _events.add(event);
 
   @override
-  Future<void> abort(String sessionId) async => abortCount++;
+  Future<void> abort(String sessionId) async {
+    abortCount++;
+    if (abortFailure != null) throw abortFailure!;
+  }
 
   @override
   Future<List<AiAuthMethod>> authMethods() async => const [];
