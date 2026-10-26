@@ -1,3 +1,10 @@
+## 0.3.4
+
+- Retire the runtime session after cancellation, retaining visible local history
+  and restoring only uncancelled messages into the next runtime context. This
+  prevents the model from completing a cancelled, unanswered question later.
+- Add optional cancellation metadata to persisted conversation messages.
+
 ## 0.3.3
 
 - Serialize cancellation after in-flight prompt acknowledgement, so a request

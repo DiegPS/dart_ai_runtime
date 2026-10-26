@@ -173,7 +173,12 @@ class AiConversationController {
       final requestId = _nextMessageId();
       _listen(events, sessionId, generation, priorIds, requestId);
       final effectiveText = createdSession && initialMessages.isEmpty
-          ? _historyPromptBuilder(normalized, previousMessages)
+          ? _historyPromptBuilder(
+              normalized,
+              previousMessages
+                  .where((message) => !message.isCancelled)
+                  .toList(growable: false),
+            )
           : normalized;
       final dispatch = client.promptAsync(
         sessionId,
@@ -392,7 +397,8 @@ class AiConversationController {
     });
   }
 
-  /// Cancels the active generation while retaining the reusable session.
+  /// Cancels the active turn and retires its runtime context while retaining
+  /// visible local history. The next session restores uncancelled history.
   Future<void> abort() async {
     final sessionId = _state.sessionId;
     if (sessionId == null || !_state.isBusy) return;
@@ -413,21 +419,45 @@ class AiConversationController {
       if (!_current(generation)) return;
       await client.abort(sessionId);
       if (!_current(generation)) return;
+      try {
+        await client.deleteSession(sessionId);
+      } catch (_) {
+        // A new session still isolates its context if old-session cleanup fails.
+      }
+      if (!_current(generation)) return;
       final partial = _state.streamedText.trim();
+      final userIndex = _state.messages.lastIndexWhere(
+        (message) => message.role == 'user',
+      );
+      final retained = [
+        for (var index = 0; index < _state.messages.length; index++)
+          if (index != userIndex)
+            _state.messages[index]
+          else
+            AiChatMessage(
+              id: _state.messages[index].id,
+              role: _state.messages[index].role,
+              content: _state.messages[index].content,
+              timestamp: _state.messages[index].timestamp,
+              isCancelled: true,
+            ),
+      ];
       final messages = partial.isEmpty
-          ? _state.messages
+          ? retained
           : [
-              ..._state.messages,
+              ...retained,
               AiChatMessage(
                 id: 'assistant-${_now().microsecondsSinceEpoch}',
                 role: 'assistant',
                 content: '$partial [Cancelled]',
                 timestamp: _now(),
+                isCancelled: true,
               ),
             ];
       _emit(
         _state.copyWith(
           messages: messages,
+          clearSession: true,
           streamedText: '',
           status: AiConversationStatus.idle,
         ),

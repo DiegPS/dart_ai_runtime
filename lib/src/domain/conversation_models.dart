@@ -19,6 +19,7 @@ class AiChatMessage {
     required this.content,
     required this.timestamp,
     this.isStreaming = false,
+    this.isCancelled = false,
   });
 
   final String id;
@@ -26,6 +27,7 @@ class AiChatMessage {
   final String content;
   final DateTime timestamp;
   final bool isStreaming;
+  final bool isCancelled;
 }
 
 class AiConversationState {

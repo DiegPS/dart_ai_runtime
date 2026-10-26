@@ -253,7 +253,7 @@ void main() {
       systemPrompt: 'System',
     );
     await controller.abort();
-    expect(controller.state.sessionId, isNotNull);
+    expect(controller.state.sessionId, isNull);
 
     await supervisor.restart();
     await controller.sendMessage(
@@ -294,7 +294,7 @@ void main() {
             'properties': {
               'info': {
                 'id': id,
-                'sessionID': 'session-1',
+                'sessionID': 'session-2',
                 'role': 'assistant',
                 'parentID': parent,
               },
@@ -303,9 +303,20 @@ void main() {
         );
         assistant('stale', oldParent);
         client.emit(
-          _event('message.part.delta', messageId: 'stale', delta: 'WRONG'),
+          _event(
+            'message.part.delta',
+            messageId: 'stale',
+            delta: 'WRONG',
+            sessionId: 'session-2',
+          ),
         );
-        client.emit(_event('message.completed', messageId: 'stale'));
+        client.emit(
+          _event(
+            'message.completed',
+            messageId: 'stale',
+            sessionId: 'session-2',
+          ),
+        );
         assistant('current', client.lastPrompt!.messageId);
         client.emit(
           _event(
@@ -313,18 +324,26 @@ void main() {
             messageId: 'current',
             partId: 'current-part',
             delta: 'Correct ',
+            sessionId: 'session-2',
           ),
         );
-        client.emit(_event('session.idle'));
+        client.emit(_event('session.idle', sessionId: 'session-2'));
         client.emit(
           _event(
             'message.part.delta',
             messageId: 'current',
             partId: 'current-part',
             delta: 'answer',
+            sessionId: 'session-2',
           ),
         );
-        client.emit(_event('message.completed', messageId: 'current'));
+        client.emit(
+          _event(
+            'message.completed',
+            messageId: 'current',
+            sessionId: 'session-2',
+          ),
+        );
       });
       expect(
         await controller.sendAndWait(
@@ -490,6 +509,60 @@ void main() {
       await controller.dispose();
     },
   );
+
+  test('restored cancelled messages stay visible but are excluded from model context', () async {
+    final client = _RuntimeClient();
+    final store = _HistoryStore([
+      AiChatMessage(
+        id: 'user-ok',
+        role: 'user',
+        content: 'Earlier valid question',
+        timestamp: DateTime.utc(2026),
+      ),
+      AiChatMessage(
+        id: 'answer-ok',
+        role: 'assistant',
+        content: 'Earlier valid answer',
+        timestamp: DateTime.utc(2026),
+      ),
+      AiChatMessage(
+        id: 'cancelled-user',
+        role: 'user',
+        content: 'DO NOT CONTINUE THIS',
+        timestamp: DateTime.utc(2026),
+        isCancelled: true,
+      ),
+      AiChatMessage(
+        id: 'cancelled-partial',
+        role: 'assistant',
+        content: 'CANCELLED PARTIAL',
+        timestamp: DateTime.utc(2026),
+        isCancelled: true,
+      ),
+    ]);
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      historyStore: store,
+    );
+    addTearDown(controller.dispose);
+    await controller.sendMessage(
+      text: 'Current question',
+      providerId: 'test',
+      modelId: 'model',
+      systemPrompt: 'System',
+    );
+    expect(client.lastPrompt!.text, contains('Earlier valid answer'));
+    expect(client.lastPrompt!.text, isNot(contains('DO NOT CONTINUE THIS')));
+    expect(client.lastPrompt!.text, isNot(contains('CANCELLED PARTIAL')));
+    expect(
+      controller.state.messages.where((message) => message.isCancelled),
+      hasLength(2),
+    );
+    await controller.abort();
+    expect(controller.state.messages.last.isCancelled, true);
+    expect(controller.state.sessionId, isNull);
+  });
 }
 
 AiRuntimeEvent _event(
@@ -499,10 +572,11 @@ AiRuntimeEvent _event(
   String? role,
   String? delta,
   String? fullText,
+  String sessionId = 'session-1',
 }) => AiRuntimeEvent.fromJson({
   'type': type,
   'properties': {
-    'sessionID': 'session-1',
+    'sessionID': sessionId,
     if (messageId != null) 'messageID': messageId,
     if (partId != null) 'partID': partId,
     if (role != null) 'role': role,
