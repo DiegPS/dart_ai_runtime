@@ -49,6 +49,7 @@ class AiConversationController {
   late final Future<void> _historyRestore;
   Future<void> _historyWrites = Future<void>.value();
   StreamSubscription<AiRuntimeEvent>? _eventSubscription;
+  Future<void> _closingEvents = Future<void>.value();
   Timer? _reconciliationTimer;
   AiRuntimeEndpoint? _cachedEndpoint;
   AiRuntimeClient? _client;
@@ -256,7 +257,7 @@ class AiConversationController {
     Set<String> priorMessageIds,
     String requestId,
   ) {
-    unawaited(_eventSubscription?.cancel());
+    _cancelEvents();
     _parts.clear();
     _partTypes.clear();
     _userMessageIds.clear();
@@ -518,14 +519,26 @@ class AiConversationController {
   }
 
   void _stopStreaming() {
-    unawaited(_eventSubscription?.cancel());
-    _eventSubscription = null;
+    _cancelEvents();
     _reconciliationTimer?.cancel();
     _reconciliationTimer = null;
     _parts.clear();
     _partTypes.clear();
     _userMessageIds.clear();
     _assistantMessageId = null;
+  }
+
+  void _cancelEvents() {
+    final subscription = _eventSubscription;
+    _eventSubscription = null;
+    if (subscription == null) return;
+    final closing = Future<void>.sync(subscription.cancel)
+        .catchError((Object _) {
+          // Closing an HTTP event stream can itself report a closed connection.
+          // This is expected only for an explicitly cancelled subscription.
+        });
+    _closingEvents = Future.wait<void>([_closingEvents, closing])
+        .then<void>((_) {});
   }
 
   Future<void> _restoreHistory() async {
@@ -641,6 +654,7 @@ class AiConversationController {
     _disposed = true;
     _generation++;
     _stopStreaming();
+    await _closingEvents.timeout(const Duration(seconds: 2), onTimeout: () {});
     _client?.dispose();
     _completePendingError(StateError('Conversation controller disposed.'));
     await _historyWrites;

@@ -147,6 +147,30 @@ void main() {
     await controller.dispose();
   });
 
+  test(
+    'transport cancellation errors do not escape conversation disposal',
+    () async {
+      final events = StreamController<AiRuntimeEvent>(
+        onCancel: () =>
+            Future<void>.error(StateError('Synthetic closed transport')),
+      );
+      final client = _RuntimeClient()..eventOverride = events.stream;
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+      );
+      await controller.sendMessage(
+        text: 'Question',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'System',
+      );
+      await controller.dispose();
+      await Future<void>.delayed(Duration.zero);
+      expect(client.disposed, true);
+    },
+  );
+
   test('abort waits until an in-flight prompt has been accepted', () async {
     final client = _RuntimeClient()..promptAccepted = Completer<void>();
     final controller = AiConversationController(
@@ -231,6 +255,28 @@ void main() {
         systemPrompt: 'System',
       );
       expect(answer, 'Correct current answer');
+    },
+  );
+
+  test(
+    'disposal closes the client even if SSE cancellation never completes',
+    () async {
+      final events = StreamController<AiRuntimeEvent>(
+        onCancel: () => Completer<void>().future,
+      );
+      final client = _RuntimeClient()..eventOverride = events.stream;
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+      );
+      await controller.sendMessage(
+        text: 'Question',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'System',
+      );
+      await controller.dispose().timeout(const Duration(seconds: 3));
+      expect(client.disposed, true);
     },
   );
 
@@ -603,6 +649,7 @@ class _RuntimeClient implements AiRuntimeClient {
   final List<AiPrompt> prompts = [];
   int createSessionCount = 0;
   Completer<void>? promptAccepted;
+  Stream<AiRuntimeEvent>? eventOverride;
 
   void emit(AiRuntimeEvent event) => _events.add(event);
 
@@ -615,7 +662,7 @@ class _RuntimeClient implements AiRuntimeClient {
   @override
   Future<Stream<AiRuntimeEvent>> connectEvents() async {
     eventsConnected = true;
-    return _events.stream;
+    return eventOverride ?? _events.stream;
   }
 
   @override

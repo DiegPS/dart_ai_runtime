@@ -1,3 +1,9 @@
+## 0.3.5
+
+- Await event subscription cleanup before closing its HTTP client. Expected
+  transport errors during explicit cancellation no longer escape as unhandled
+  asynchronous exceptions; stalled cleanup has a bounded grace period.
+
 ## 0.3.4
 
 - Retire the runtime session after cancellation, retaining visible local history
