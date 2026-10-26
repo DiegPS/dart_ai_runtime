@@ -2,6 +2,24 @@ import 'package:dart_ai_runtime/dart_ai_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('prompt correlation id is optional and serialized without losing permissions', () {
+    const prompt = AiPrompt(
+      providerId: 'test',
+      modelId: 'model',
+      system: 'System',
+      text: 'Question',
+      messageId: 'msg_synthetic',
+    );
+    expect(prompt.toJson()['messageID'], 'msg_synthetic');
+    expect(prompt.toJson()['tools'], {'*': false});
+    const legacy = AiPrompt(
+      providerId: 'test',
+      modelId: 'model',
+      system: 'System',
+      text: 'Question',
+    );
+    expect(legacy.toJson().containsKey('messageID'), false);
+  });
   test('prompts deny every tool by default', () {
     const prompt = AiPrompt(
       providerId: 'kilo',

@@ -147,6 +147,63 @@ void main() {
     await controller.dispose();
   });
 
+  test(
+    'polling excludes a cancelled reply that appears after the next baseline',
+    () async {
+      final client = _RuntimeClient();
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+        reconciliationInterval: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.sendMessage(
+        text: 'Cancelled',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'System',
+      );
+      final oldParent =
+          client.lastPrompt!.toJson()['messageID'] ?? 'old-parent';
+      await controller.abort();
+      client.onPrompt = () {
+        final newParent =
+            client.lastPrompt!.toJson()['messageID'] ?? 'new-parent';
+        client.history = [
+          {
+            'info': {
+              'id': 'late-old',
+              'role': 'assistant',
+              'parentID': oldParent,
+              'finish': 'stop',
+            },
+            'parts': [
+              {'type': 'text', 'text': 'WRONG cancelled answer'},
+            ],
+          },
+          {
+            'info': {
+              'id': 'current',
+              'role': 'assistant',
+              'parentID': newParent,
+              'finish': 'stop',
+            },
+            'parts': [
+              {'type': 'text', 'text': 'Correct current answer'},
+            ],
+          },
+        ];
+      };
+      final answer = await controller.sendAndWait(
+        text: 'Current',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'System',
+      );
+      expect(answer, 'Correct current answer');
+    },
+  );
+
   test('runtime restart creates a new client and session', () async {
     final clients = <_RuntimeClient>[];
     final controller = AiConversationController(
@@ -181,6 +238,137 @@ void main() {
     await controller.abort();
     await controller.dispose();
   });
+
+  test(
+    'late cancelled SSE and session idle cannot complete the current turn',
+    () async {
+      final client = _RuntimeClient();
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+        reconciliationInterval: const Duration(seconds: 5),
+      );
+      addTearDown(controller.dispose);
+      await controller.sendMessage(
+        text: 'Cancelled',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: 'System',
+      );
+      final oldParent = client.lastPrompt!.messageId;
+      await controller.abort();
+      client.onPrompt = () => scheduleMicrotask(() {
+        void assistant(String id, String? parent) => client.emit(
+          AiRuntimeEvent.fromJson({
+            'type': 'message.updated',
+            'properties': {
+              'info': {
+                'id': id,
+                'sessionID': 'session-1',
+                'role': 'assistant',
+                'parentID': parent,
+              },
+            },
+          }),
+        );
+        assistant('stale', oldParent);
+        client.emit(
+          _event('message.part.delta', messageId: 'stale', delta: 'WRONG'),
+        );
+        client.emit(_event('message.completed', messageId: 'stale'));
+        assistant('current', client.lastPrompt!.messageId);
+        client.emit(
+          _event(
+            'message.part.delta',
+            messageId: 'current',
+            partId: 'current-part',
+            delta: 'Correct ',
+          ),
+        );
+        client.emit(_event('session.idle'));
+        client.emit(
+          _event(
+            'message.part.delta',
+            messageId: 'current',
+            partId: 'current-part',
+            delta: 'answer',
+          ),
+        );
+        client.emit(_event('message.completed', messageId: 'current'));
+      });
+      expect(
+        await controller.sendAndWait(
+          text: 'Current',
+          providerId: 'test',
+          modelId: 'model',
+          systemPrompt: 'System',
+        ),
+        'Correct answer',
+      );
+      expect(
+        client.prompts.map((prompt) => prompt.messageId).toSet(),
+        hasLength(2),
+      );
+      for (final prompt in client.prompts) {
+        expect(prompt.messageId, matches(RegExp(r'^msg_[a-zA-Z0-9]{26}$')));
+      }
+    },
+  );
+
+  test(
+    'a cancelled finish does not finish a partial current polling response',
+    () async {
+      final client = _RuntimeClient();
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+        reconciliationInterval: const Duration(milliseconds: 5),
+      );
+      addTearDown(controller.dispose);
+      client.onPrompt = () {
+        client.history = [
+          {
+            'info': {
+              'id': 'stale',
+              'role': 'assistant',
+              'parentID': 'old-parent',
+              'finish': 'stop',
+            },
+            'parts': [
+              {'type': 'text', 'text': 'WRONG'},
+            ],
+          },
+          {
+            'info': {
+              'id': 'current',
+              'role': 'assistant',
+              'parentID': client.lastPrompt!.messageId,
+            },
+            'parts': [
+              {'type': 'text', 'text': 'Partial current'},
+            ],
+          },
+        ];
+      };
+      var completed = false;
+      final pending = controller
+          .sendAndWait(
+            text: 'Current',
+            providerId: 'test',
+            modelId: 'model',
+            systemPrompt: 'System',
+          )
+          .then((answer) {
+            completed = true;
+            return answer;
+          });
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(completed, false);
+      expect(controller.state.streamedText, 'Partial current');
+      (client.history.last['info'] as Map)['finish'] = 'stop';
+      expect(await pending, 'Partial current');
+    },
+  );
 
   test('reuses one runtime session across consecutive prompts', () async {
     final client = _RuntimeClient();

@@ -1,3 +1,13 @@
+## 0.3.2
+
+- Correlate each assistant response with the explicit user message ID sent to
+  the runtime, in both SSE and polling reconciliation. Late cancelled messages
+  can no longer become the next turn's answer.
+- Ignore session-wide idle notifications when completing individual turns;
+  these can arrive late after cancellation.
+- Cover delayed cancelled snapshots, partial current replies, stale SSE and
+  message ID serialization with deterministic regression tests.
+
 ## 0.3.1
 
 - Preserve the trusted prompt in memory when a provider invokes the system hook

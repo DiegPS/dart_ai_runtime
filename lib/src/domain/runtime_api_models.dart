@@ -132,6 +132,7 @@ class AiPrompt {
     required this.modelId,
     required this.system,
     required this.text,
+    this.messageId,
     this.toolPermissions = const {'*': false},
   });
 
@@ -139,11 +140,13 @@ class AiPrompt {
   final String modelId;
   final String system;
   final String text;
+  final String? messageId;
 
   /// Explicit OpenCode permission patterns. Tools are denied by default.
   final Map<String, bool> toolPermissions;
 
   Map<String, Object> toJson() => {
+    'messageID': ?messageId,
     'model': {'providerID': providerId, 'modelID': modelId},
     'system': system,
     'tools': toolPermissions,

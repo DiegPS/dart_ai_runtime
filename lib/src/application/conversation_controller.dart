@@ -2,6 +2,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import '../domain/conversation_models.dart';
 import '../domain/runtime_api_models.dart';
@@ -55,6 +56,23 @@ class AiConversationController {
   int _generation = 0;
   bool _turnFinished = false;
   bool _disposed = false;
+  static final _random = Random.secure();
+  static int _lastMessageClock = 0;
+
+  static String _nextMessageId() {
+    final clock = DateTime.now().millisecondsSinceEpoch * 4096;
+    _lastMessageClock = max(clock, _lastMessageClock + 1);
+    const alphabet =
+        '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    final suffix = List.generate(
+      14,
+      (_) => alphabet[_random.nextInt(alphabet.length)],
+    ).join();
+    final timestamp = (_lastMessageClock & 0xffffffffffff)
+        .toRadixString(16)
+        .padLeft(12, '0');
+    return 'msg_$timestamp$suffix';
+  }
 
   final Map<String, String> _parts = {};
   final Map<String, String> _partTypes = {};
@@ -139,7 +157,6 @@ class AiConversationController {
         _emit(_state.copyWith(sessionId: sessionId));
       }
       final initialMessages = await client.messages(sessionId);
-      final baselineCount = initialMessages.length;
       final priorIds = initialMessages
           .map(
             (item) => item['info'] is Map
@@ -152,7 +169,8 @@ class AiConversationController {
       _emit(_state.copyWith(status: AiConversationStatus.connecting));
       final events = await client.connectEvents();
       if (!_current(generation)) return;
-      _listen(events, sessionId, generation, priorIds);
+      final requestId = _nextMessageId();
+      _listen(events, sessionId, generation, priorIds, requestId);
       final effectiveText = createdSession && initialMessages.isEmpty
           ? _historyPromptBuilder(normalized, previousMessages)
           : normalized;
@@ -163,12 +181,13 @@ class AiConversationController {
           modelId: modelId,
           system: systemPrompt,
           text: effectiveText,
+          messageId: requestId,
           toolPermissions: toolPermissions,
         ),
       );
       if (!_current(generation) || _turnFinished) return;
       _emit(_state.copyWith(status: AiConversationStatus.streaming));
-      _startReconciliation(sessionId, generation, baselineCount);
+      _startReconciliation(sessionId, generation, requestId);
     } catch (error) {
       if (!_current(generation)) return;
       _stopStreaming();
@@ -223,6 +242,7 @@ class AiConversationController {
     String sessionId,
     int generation,
     Set<String> priorMessageIds,
+    String requestId,
   ) {
     unawaited(_eventSubscription?.cancel());
     _parts.clear();
@@ -246,9 +266,8 @@ class AiConversationController {
           return;
         }
         if (!event.type.startsWith('message.')) {
-          if (event.isCompleted && _assistantMessageId != null) {
-            _commit(generation);
-          }
+          // Session-wide idle can belong to a cancelled turn. Only a matching
+          // assistant completion or the message snapshot may finish this turn.
           return;
         }
         final messageId = event.messageId;
@@ -259,8 +278,13 @@ class AiConversationController {
           return;
         }
         if (messageId != null) {
+          final info = event.properties['info'];
+          final parentId = info is Map
+              ? info['parentID']
+              : event.properties['parentID'];
+          if (parentId != null && parentId != requestId) return;
           if (_assistantMessageId == null) {
-            if (event.role != null && !event.isAssistant) return;
+            if (!event.isAssistant) return;
             _assistantMessageId = messageId;
           } else if (_assistantMessageId != messageId) {
             return;
@@ -305,7 +329,7 @@ class AiConversationController {
   void _startReconciliation(
     String sessionId,
     int generation,
-    int baselineCount,
+    String requestId,
   ) {
     _reconciliationTimer?.cancel();
     var attempts = 0;
@@ -336,12 +360,20 @@ class AiConversationController {
         reading = true;
         final messages = await _activeClient.messages(sessionId);
         if (!_current(generation) || _turnFinished) return;
-        final text = _assistantTextAfter(messages, baselineCount);
+        final matching = messages
+            .where((message) {
+              final info = message['info'];
+              return info is Map &&
+                  info['role'] == 'assistant' &&
+                  info['parentID'] == requestId;
+            })
+            .toList(growable: false);
+        final text = _assistantTextAfter(matching, 0);
         if (text != null && text.isNotEmpty) {
           if (text.length >= _state.streamedText.length) {
             _emit(_state.copyWith(streamedText: text));
           }
-          if (_assistantFinishedAfter(messages, baselineCount)) {
+          if (_assistantFinishedAfter(matching, 0)) {
             _commit(generation);
           }
         }
