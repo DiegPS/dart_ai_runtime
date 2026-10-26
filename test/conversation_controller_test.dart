@@ -147,6 +147,36 @@ void main() {
     await controller.dispose();
   });
 
+  test('abort waits until an in-flight prompt has been accepted', () async {
+    final client = _RuntimeClient()..promptAccepted = Completer<void>();
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+    );
+    addTearDown(controller.dispose);
+    final sending = controller.sendMessage(
+      text: 'Long question',
+      providerId: 'test',
+      modelId: 'model',
+      systemPrompt: 'System',
+    );
+    while (client.lastPrompt == null) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    final cancelling = controller.abort();
+    await Future<void>.delayed(Duration.zero);
+    expect(
+      client.abortCount,
+      0,
+      reason: 'Aborting before prompt acceptance leaves a future generation running',
+    );
+    expect(controller.state.status, AiConversationStatus.canceling);
+    client.promptAccepted!.complete();
+    await Future.wait([sending, cancelling]);
+    expect(client.abortCount, 1);
+    expect(controller.state.status, AiConversationStatus.idle);
+  });
+
   test(
     'polling excludes a cancelled reply that appears after the next baseline',
     () async {
@@ -498,6 +528,7 @@ class _RuntimeClient implements AiRuntimeClient {
   AiPrompt? lastPrompt;
   final List<AiPrompt> prompts = [];
   int createSessionCount = 0;
+  Completer<void>? promptAccepted;
 
   void emit(AiRuntimeEvent event) => _events.add(event);
 
@@ -538,6 +569,7 @@ class _RuntimeClient implements AiRuntimeClient {
     lastPrompt = prompt;
     prompts.add(prompt);
     onPrompt?.call();
+    await promptAccepted?.future;
   }
 
   @override

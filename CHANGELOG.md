@@ -1,3 +1,9 @@
+## 0.3.3
+
+- Serialize cancellation after in-flight prompt acknowledgement, so a request
+  cannot be admitted after the server has already processed its abort.
+- Ignore cancellation results after conversation replacement or disposal.
+
 ## 0.3.2
 
 - Correlate each assistant response with the explicit user message ID sent to

@@ -53,6 +53,7 @@ class AiConversationController {
   AiRuntimeEndpoint? _cachedEndpoint;
   AiRuntimeClient? _client;
   Completer<String>? _pendingResponse;
+  Future<void>? _promptDispatch;
   int _generation = 0;
   bool _turnFinished = false;
   bool _disposed = false;
@@ -174,7 +175,7 @@ class AiConversationController {
       final effectiveText = createdSession && initialMessages.isEmpty
           ? _historyPromptBuilder(normalized, previousMessages)
           : normalized;
-      await client.promptAsync(
+      final dispatch = client.promptAsync(
         sessionId,
         AiPrompt(
           providerId: providerId,
@@ -185,6 +186,12 @@ class AiConversationController {
           toolPermissions: toolPermissions,
         ),
       );
+      _promptDispatch = dispatch;
+      try {
+        await dispatch;
+      } finally {
+        if (identical(_promptDispatch, dispatch)) _promptDispatch = null;
+      }
       if (!_current(generation) || _turnFinished) return;
       _emit(_state.copyWith(status: AiConversationStatus.streaming));
       _startReconciliation(sessionId, generation, requestId);
@@ -389,12 +396,23 @@ class AiConversationController {
   Future<void> abort() async {
     final sessionId = _state.sessionId;
     if (sessionId == null || !_state.isBusy) return;
-    _generation++;
+    final generation = ++_generation;
     _turnFinished = true;
     _emit(_state.copyWith(status: AiConversationStatus.canceling));
     _stopStreaming();
     try {
-      await _activeClient.abort(sessionId);
+      final client = _activeClient;
+      final dispatch = _promptDispatch;
+      if (dispatch != null) {
+        try {
+          await dispatch;
+        } catch (_) {
+          // A failed HTTP acknowledgement may still have reached the server.
+        }
+      }
+      if (!_current(generation)) return;
+      await client.abort(sessionId);
+      if (!_current(generation)) return;
       final partial = _state.streamedText.trim();
       final messages = partial.isEmpty
           ? _state.messages
@@ -417,6 +435,7 @@ class AiConversationController {
       _persistHistory();
       _completePendingError(StateError('Generation cancelled.'));
     } catch (error) {
+      if (!_current(generation)) return;
       _emit(_state.copyWith(status: AiConversationStatus.error, error: error));
       _completePendingError(error);
       rethrow;
