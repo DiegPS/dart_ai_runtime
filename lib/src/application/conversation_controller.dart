@@ -218,6 +218,8 @@ class AiConversationController {
   ///
   /// Aborts the active generation and throws a [TimeoutException] if [timeout]
   /// expires.
+  /// Runtime generation rejections throw [AiRuntimeGenerationException] and
+  /// retire the rejected session before another turn can start.
   Future<String> sendAndWait({
     required String text,
     required String providerId,
@@ -239,7 +241,7 @@ class AiConversationController {
         systemPrompt: systemPrompt,
         toolPermissions: toolPermissions,
       ).catchError((Object error) {
-        _completePendingError(error);
+        if (identical(_pendingResponse, pending)) _completePendingError(error);
       }),
     );
     return pending.future.timeout(
@@ -269,21 +271,15 @@ class AiConversationController {
     _responseActivity = 0;
     _eventSubscription = events.listen(
       (event) {
-        if (!_current(generation)) return;
+        if (!_current(generation) || _turnFinished) return;
         if (event.sessionId != null && event.sessionId != sessionId) return;
-        if (event.isError) {
-          final Object error =
-              event.properties['error'] as Object? ??
-              event.raw['error'] as Object? ??
-              StateError('The runtime reported a generation error.');
-          _stopStreaming();
-          _emit(
-            _state.copyWith(status: AiConversationStatus.error, error: error),
-          );
-          _completePendingError(error);
-          return;
-        }
+        final eventRequest = event.properties['requestID'];
+        if (eventRequest != null && eventRequest != requestId) return;
         if (!event.type.startsWith('message.')) {
+          // Session errors have no generation ID: require an exact session.
+          if (event.sessionId == sessionId && event.failure != null) {
+            _rejectTurn(event.failure!, generation);
+          }
           // Session-wide idle can belong to a cancelled turn. Only a matching
           // assistant completion or the message snapshot may finish this turn.
           return;
@@ -307,6 +303,11 @@ class AiConversationController {
           } else if (_assistantMessageId != messageId) {
             return;
           }
+        }
+        final failure = event.failure;
+        if (failure != null && messageId != null) {
+          _rejectTurn(failure, generation);
+          return;
         }
         final partId = event.partId ?? 'default';
         final rawPart = event.properties['part'];
@@ -397,6 +398,17 @@ class AiConversationController {
                   info['parentID'] == requestId;
             })
             .toList(growable: false);
+        for (final message in matching) {
+          final info = message['info'] as Map;
+          final error = info['error'];
+          if (error != null) {
+            _rejectTurn(
+              AiRuntimeGenerationException.fromRuntimeError(error as Object),
+              generation,
+            );
+            return;
+          }
+        }
         final text = _assistantTextAfter(matching, 0);
         if (text != null && text.isNotEmpty) {
           if (text.length >= _state.streamedText.length) {
@@ -407,6 +419,8 @@ class AiConversationController {
             _commit(generation);
           }
         }
+      } on AiRuntimeGenerationException catch (error) {
+        _rejectTurn(error, generation);
       } catch (_) {
         // Retry transient polling failures.
       } finally {
@@ -418,6 +432,58 @@ class AiConversationController {
   void _timeoutResponse(int generation) {
     if (!_current(generation) || _turnFinished) return;
     unawaited(_retireTimedOutTurn());
+  }
+
+  void _rejectTurn(AiRuntimeGenerationException error, int generation) {
+    if (!_current(generation) || _turnFinished) return;
+    final sessionId = _state.sessionId;
+    final client = _client;
+    final dispatch = _promptDispatch;
+    _promptDispatch = null;
+    _generation++;
+    _turnFinished = true;
+    _stopStreaming();
+    _retireCancelledTurn(status: AiConversationStatus.error, error: error);
+    _completePendingError(error);
+    if (sessionId != null && client != null) {
+      unawaited(_cleanupRejectedTurn(client, sessionId, dispatch));
+    }
+  }
+
+  Future<void> _cleanupRejectedTurn(
+    AiRuntimeClient client,
+    String sessionId,
+    Future<void>? dispatch,
+  ) async {
+    // Share one deadline across acknowledgement, abort, and deletion. A late
+    // acknowledgement may still admit work, so never abort ahead of dispatch.
+    final clock = Stopwatch()..start();
+    const budget = Duration(seconds: 2);
+    Future<void> bounded(Future<void> Function() action) async {
+      final remaining = budget - clock.elapsed;
+      if (remaining <= Duration.zero) return;
+      await Future<void>.sync(action).timeout(remaining);
+    }
+
+    try {
+      if (dispatch != null) {
+        try {
+          await bounded(() => dispatch);
+        } on TimeoutException {
+          return;
+        } catch (_) {
+          // A failed acknowledgement may still have reached the server.
+        }
+      }
+      try {
+        await bounded(() => client.abort(sessionId));
+      } catch (_) {
+        // Deletion can still succeed after a failed abort.
+      }
+      await bounded(() => client.deleteSession(sessionId));
+    } catch (_) {
+      // Cleanup must never replace the rejection or mutate a newer turn.
+    }
   }
 
   Future<void> _retireTimedOutTurn() async {

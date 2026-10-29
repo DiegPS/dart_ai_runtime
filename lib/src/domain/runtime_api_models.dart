@@ -156,6 +156,62 @@ class AiPrompt {
   };
 }
 
+/// Stable categories for runtime generation failures, independent of UI language.
+enum AiRuntimeFailureKind {
+  authentication,
+  permissionDenied,
+  quotaExceeded,
+  unknown,
+}
+
+/// A runtime rejection with safe diagnostics and an explicitly retained cause.
+class AiRuntimeGenerationException implements Exception {
+  const AiRuntimeGenerationException({
+    required this.kind,
+    required this.cause,
+    this.statusCode,
+  });
+
+  final AiRuntimeFailureKind kind;
+
+  /// Original runtime error or retry status. May contain sensitive provider data;
+  /// hosts must not log or display this value without their own redaction.
+  final Object cause;
+  final int? statusCode;
+
+  factory AiRuntimeGenerationException.fromRuntimeError(Object error) {
+    if (error is AiRuntimeGenerationException) return error;
+    final data = error is Map ? error['data'] ?? error : null;
+    final code = data is Map ? data['statusCode'] ?? data['status'] : null;
+    final name = error is Map ? error['name'] : null;
+    final message = data is Map ? data['message'] : null;
+    return AiRuntimeGenerationException(
+      kind: code == 401 || name == 'ProviderAuthError'
+          ? AiRuntimeFailureKind.authentication
+          : code == 403
+          ? AiRuntimeFailureKind.permissionDenied
+          : (data is Map && data['type'] == 'provider.free-limit') ||
+                _freeQuotaMessage(message)
+          ? AiRuntimeFailureKind.quotaExceeded
+          : AiRuntimeFailureKind.unknown,
+      cause: error,
+      statusCode: code is int ? code : null,
+    );
+  }
+
+  // Older runtimes may omit the structured action. Match only the verified
+  // free-quota wording; generic rate limits and exhausted resources can recover.
+  static bool _freeQuotaMessage(Object? message) =>
+      message is String &&
+      (message.startsWith('Free usage limit reached.') ||
+          message == 'Free usage exceeded, subscribe to Go');
+
+  @override
+  String toString() =>
+      'Runtime generation failed (${kind.name}'
+      '${statusCode == null ? '' : ', HTTP $statusCode'}).';
+}
+
 class AiRuntimeEvent {
   const AiRuntimeEvent({
     required this.type,
@@ -273,6 +329,37 @@ class AiRuntimeEvent {
         info['finish'].toString() != 'null';
   }
 
-  bool get isError =>
-      type.toLowerCase().contains('error') || properties.containsKey('error');
+  /// Terminal errors, including definitive rejection carried by a retry status.
+  /// Ordinary retry statuses deliberately remain nonterminal.
+  AiRuntimeGenerationException? get failure {
+    final status = properties['status'];
+    if (type == 'session.status' &&
+        status is Map &&
+        status['type'] == 'retry') {
+      final action = status['action'];
+      if (action is Map && action['reason'] == 'free_tier_limit' ||
+          AiRuntimeGenerationException._freeQuotaMessage(status['message'])) {
+        return AiRuntimeGenerationException(
+          kind: AiRuntimeFailureKind.quotaExceeded,
+          cause: status,
+        );
+      }
+      return null;
+    }
+    final info = properties['info'];
+    final error =
+        properties['error'] ??
+        (type == 'message.updated' && info is Map ? info['error'] : null);
+    if (error != null) {
+      return AiRuntimeGenerationException.fromRuntimeError(error as Object);
+    }
+    if (type.toLowerCase().contains('error')) {
+      return AiRuntimeGenerationException.fromRuntimeError(
+        (raw['error'] ?? raw) as Object,
+      );
+    }
+    return null;
+  }
+
+  bool get isError => failure != null;
 }

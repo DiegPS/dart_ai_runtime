@@ -38,7 +38,9 @@ void main() {
         try {
           process = await processService.start(
             AiRuntimeInstallation(
-              definition: const PinnedAiRuntimeCatalog().definition(kind),
+              definition: kind == AiRuntimeKind.openCode
+                  ? PinnedAiRuntimeCatalog.openCodeV1
+                  : const PinnedAiRuntimeCatalog().definition(kind),
               directoryPath: File(executablePath!).parent.path,
             ),
             password: 'neutral-session-test-only',

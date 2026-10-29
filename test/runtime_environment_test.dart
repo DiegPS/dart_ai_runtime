@@ -40,6 +40,30 @@ void main() {
     expect(environment['KILO_PURE'], '1');
     expect(environment['XDG_DATA_HOME'], storage.data(AiRuntimeKind.kilo).path);
 
+    final v2 = LocalAiRuntimeProcessService.buildSanitizedEnvironment(
+      kind: AiRuntimeKind.openCode,
+      storage: storage,
+      username: 'opencode',
+      password: 'ephemeral-password',
+      apiVersion: 2,
+      parentEnvironment: const {
+        'OPENAI_API_KEY': 'secret',
+        'OPENCODE_PASSWORD': 'parent-secret',
+      },
+    );
+    expect(v2['OPENCODE_PASSWORD'], 'ephemeral-password');
+    expect(v2.containsKey('OPENAI_API_KEY'), isFalse);
+    expect(v2.containsKey('OPENCODE_CLIENT'), isFalse);
+    expect(v2.containsKey('OPENCODE_DISABLE_TOOLS'), isFalse);
+    expect(
+      v2['XDG_DATA_HOME'],
+      p.join(storage.data(AiRuntimeKind.openCode).path, 'v2'),
+    );
+    expect(
+      v2['OPENCODE_CONFIG_DIR'],
+      p.join(storage.config(AiRuntimeKind.openCode).path, 'v2', 'opencode'),
+    );
+
     final managedEnvironment =
         LocalAiRuntimeProcessService.buildSanitizedEnvironment(
           kind: AiRuntimeKind.kilo,

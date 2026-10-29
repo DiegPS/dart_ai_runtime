@@ -1,0 +1,55 @@
+{
+  "turns": [
+    {
+      "prompt": "Hola",
+      "answer": "DART_RUNTIME_TURN_1\n\n¡Hola! ¿En qué puedo ayudarte hoy?",
+      "model": {
+        "providerID": "opencode",
+        "id": "big-pickle",
+        "variant": "default"
+      },
+      "elapsedMs": 3285,
+      "sseDeltas": 1
+    },
+    {
+      "prompt": "Salúdame otra vez en español.",
+      "answer": "DART_RUNTIME_TURN_2\n\n¡Hola de nuevo! ¿En qué puedo ayudarte?",
+      "model": {
+        "providerID": "opencode",
+        "id": "big-pickle",
+        "variant": "default"
+      },
+      "elapsedMs": 3004,
+      "sseDeltas": 1
+    },
+    {
+      "prompt": "Di hola por tercera vez en una frase.",
+      "answer": "DART_RUNTIME_TURN_3\n\nHola por tercera vez, ¡qué gusto saludarte de nuevo!",
+      "model": {
+        "providerID": "opencode",
+        "id": "big-pickle",
+        "variant": "default"
+      },
+      "elapsedMs": 2810,
+      "sseDeltas": 1
+    }
+  ],
+  "version": "2.2.2",
+  "outcome": "passed",
+  "platform": "Windows x64",
+  "date": "2026-10-29",
+  "test": "test/integration/live_opencode_v2_test.dart",
+  "sseDeltasMeaning": "Visible text deltas only; reasoning is excluded.",
+  "validation": {
+    "analyze": "No issues found",
+    "offlinePassed": 111,
+    "offlineSkipped": 5,
+    "livePassed": 1,
+    "liveTurns": 3
+  },
+  "verifiedArchive": {
+    "sha256": "b37348910be48f89873942ee377ccbe239c05814b8f8e9065ef4791c522facdc",
+    "upstreamSri": "sha512-tFS9vYp0/+VOeYpcWvAy1e2iMEx6x5/XagVpwtjG33ocvumn5R2qaKGhqhI56Wu8Hfet+VYaw8nwbx9BqxJCqQ==",
+    "bytes": 119436377
+  }
+}

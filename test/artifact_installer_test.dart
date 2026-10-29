@@ -69,6 +69,33 @@ void main() {
     expect(installations[0].directoryPath, installations[1].directoryPath);
   });
 
+  for (final name in ['package/bin/opencode.exe', '../escaped.exe']) {
+    test('handles verified tar.gz entry $name securely', () async {
+      final archive = Archive()
+        ..addFile(ArchiveFile(name, 2048, List<int>.filled(2048, 7)));
+      final payload = GZipEncoder().encode(TarEncoder().encode(archive));
+      final spec = _spec(
+        payload,
+        archiveType: ArtifactArchiveType.tarGzip,
+        archiveRoot: name.startsWith('package/') ? 'package/bin' : null,
+      );
+      final installer = ArtifactInstaller(
+        sharedRoot: root,
+        downloader: _MemoryDownloader(payload),
+      );
+      if (name.startsWith('../')) {
+        await expectLater(installer.install(spec), throwsArgumentError);
+      } else {
+        final installed = await installer.install(spec);
+        expect(
+          await File(p.join(installed.directoryPath, 'opencode.exe')).length(),
+          2048,
+        );
+        expect(await installer.installed(spec), isNotNull);
+      }
+    });
+  }
+
   test('same semantic version with another payload remains isolated', () async {
     final firstPayload = _zip({'opencode.exe': List<int>.filled(2048, 7)});
     final secondPayload = _zip({'opencode.exe': List<int>.filled(2048, 8)});
@@ -114,7 +141,12 @@ void main() {
   });
 }
 
-ArtifactSpec _spec(List<int> payload, {String? digest}) => ArtifactSpec(
+ArtifactSpec _spec(
+  List<int> payload, {
+  String? digest,
+  ArtifactArchiveType archiveType = ArtifactArchiveType.zip,
+  String? archiveRoot,
+}) => ArtifactSpec(
   id: 'opencode',
   version: '1.0.0',
   group: 'runtime',
@@ -125,10 +157,11 @@ ArtifactSpec _spec(List<int> payload, {String? digest}) => ArtifactSpec(
       sha256: digest ?? sha256.convert(payload).toString(),
       bytes: payload.length,
       fileName: 'opencode.zip',
-      archiveType: ArtifactArchiveType.zip,
+      archiveType: archiveType,
     ),
   ],
   requiredPaths: const ['opencode.exe'],
+  archiveRoot: archiveRoot,
   license: ArtifactLicense(
     name: 'MIT',
     uri: Uri.parse('https://example.test/license'),

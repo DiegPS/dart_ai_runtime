@@ -1,3 +1,39 @@
+## Unreleased
+
+- Add offline behavioral coverage for authentication, persistence, verified
+  installation, process lifecycle/Windows jobs, legacy HTTP/SSE, and downloads.
+  Generate LCOV plus a per-file JSON report and enforce a 90% library line gate.
+- Allow injecting the OS process starter while retaining explicit environment
+  isolation and real child-process lifecycle testing.
+- Cancel the download reader when cancellation is requested, releasing silent
+  streams promptly and preserving the cancellation exception while flushing
+  partial files safely.
+
+- Pin the official OpenCode 2.2.2 Windows x64 distribution with exact size and
+  SHA-256, verified against the registry's SHA-512 integrity metadata. Add secure
+  tar.gz extraction; preserve the explicit V1 distribution and unchanged Kilo pin.
+- Add `OpenCodeV2RuntimeClient` and `createAiRuntimeClient` for native model,
+  session, instruction-entry, permission, message-pagination and SSE APIs.
+- Keep OpenCode 2's native agent and tool definitions; hold unapproved operations
+  for permission and reject them before execution, over SSE or reconciliation.
+- Reconnect live-only SSE, correlate turns, combine multi-step answers, validate
+  actual response models, and expose response model identity without fallback.
+- Start V2 with ephemeral loopback authentication, dedicated private V2 data and
+  configuration, and no inherited provider credentials or legacy prompt plugins.
+- Add an opt-in Windows end-to-end test that installs the verified distribution
+  and checks three real Big Pickle responses, SSE and changing host instructions.
+- Cover idle-only execution failures, interrupted turns, repeated pagination
+  cursors, and late fragments from previous requests. Cancel silent, unconsumed,
+  rejected, and late-arriving SSE connections during disposal.
+
+- Propagate definitive runtime rejections as `AiRuntimeGenerationException`,
+  including OpenCode free-tier retry actions and assistant errors without text
+  received through SSE or message reconciliation.
+- Retire rejected sessions immediately, ignore late events, and bound remote
+  cleanup without replacing the original cause or blocking subsequent turns.
+- Keep temporary retries and silent-response timeouts; omit raw response bodies
+  from HTTP exception diagnostics.
+
 ## 0.3.6
 
 - Treat reconciliation attempts as an inactivity budget: correlated text or

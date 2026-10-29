@@ -32,7 +32,9 @@ class AiRuntimeHealthClient implements AiRuntimeHealthService {
       try {
         final response = await _client
             .get(
-              endpoint.baseUri.resolve('/global/health'),
+              endpoint.baseUri.resolve(
+                endpoint.apiVersion == 2 ? '/api/info' : '/global/health',
+              ),
               headers: {
                 HttpHeaders.authorizationHeader:
                     'Basic ${base64Encode(utf8.encode('${endpoint.username}:${endpoint.password}'))}',
@@ -41,7 +43,12 @@ class AiRuntimeHealthClient implements AiRuntimeHealthService {
             .timeout(const Duration(seconds: 2));
         if (response.statusCode == HttpStatus.ok) {
           final decoded = jsonDecode(response.body);
-          if (decoded is Map && decoded['healthy'] == true) {
+          if (decoded is Map &&
+              (endpoint.apiVersion == 2
+                  ? decoded['version'] is String &&
+                        (decoded['version'] as String).startsWith('2.') &&
+                        decoded['pid'] == endpoint.pid
+                  : decoded['healthy'] == true)) {
             return AiRuntimeHealth(
               healthy: true,
               version: decoded['version']?.toString(),

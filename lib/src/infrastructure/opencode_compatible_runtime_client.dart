@@ -26,6 +26,12 @@ class OpenCodeCompatibleRuntimeClient
     this.requestTimeout = const Duration(seconds: 10),
   }) : _client = client ?? http.Client(),
        _ownsClient = client == null {
+    if (endpoint.apiVersion != 1) {
+      if (_ownsClient) _client.close();
+      throw UnsupportedError(
+        'Use createAiRuntimeClient or OpenCodeV2RuntimeClient for OpenCode 2.',
+      );
+    }
     if (!endpoint.isLoopback) {
       throw ArgumentError.value(
         endpoint.baseUri,
@@ -414,8 +420,11 @@ class AiRuntimeApiException implements Exception {
   const AiRuntimeApiException(this.statusCode, this.body);
 
   final int statusCode;
+
+  /// Original response body for explicit inspection; may contain sensitive data.
+  /// This value is deliberately excluded from [toString].
   final String body;
 
   @override
-  String toString() => 'Runtime API returned HTTP $statusCode: $body';
+  String toString() => 'Runtime API returned HTTP $statusCode.';
 }

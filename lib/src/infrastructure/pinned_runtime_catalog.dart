@@ -9,7 +9,43 @@ class PinnedAiRuntimeCatalog {
     AiRuntimeKind.kilo => kilo,
   };
 
-  static final openCode = AiRuntimeDefinition(
+  static final openCode = openCodeV2;
+
+  /// The official OpenCode 2 Windows distribution, verified against npm SRI.
+  static final openCodeV2 = AiRuntimeDefinition(
+    kind: AiRuntimeKind.openCode,
+    version: '2.2.2',
+    executableName: 'opencode.exe',
+    artifact: ArtifactSpec(
+      id: 'opencode',
+      version: '2.2.2',
+      group: 'ai-runtime',
+      archiveRoot: 'package/bin',
+      payloads: [
+        ArtifactPayloadSpec(
+          id: 'windows-x64',
+          uri: Uri.parse(
+            'https://registry.npmjs.org/@opencode/cli-windows-x64/-/cli-windows-x64-2.2.2.tgz',
+          ),
+          sha256: 'b37348910be48f89873942ee377ccbe239c05814b8f8e9065ef4791c522facdc',
+          bytes: 119436377,
+          fileName: 'cli-windows-x64-2.2.2.tgz',
+          archiveType: ArtifactArchiveType.tarGzip,
+        ),
+      ],
+      requiredPaths: const ['opencode.exe'],
+      license: ArtifactLicense(
+        name: 'MIT',
+        uri: Uri.parse(
+          'https://github.com/anomalyco/opencode/blob/dev/LICENSE',
+        ),
+        notice: 'OpenCode copyright 2025 opencode contributors.',
+      ),
+    ),
+  );
+
+  /// The legacy distribution retained for hosts that explicitly require V1.
+  static final openCodeV1 = AiRuntimeDefinition(
     kind: AiRuntimeKind.openCode,
     version: '1.18.27',
     executableName: 'opencode.exe',

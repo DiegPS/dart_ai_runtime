@@ -6,6 +6,96 @@ import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'SSE retains verified retry action and assistant error envelopes',
+    () async {
+      final payloads = [
+        {
+          'type': 'session.status',
+          'properties': {
+            'sessionID': 'session-1',
+            'status': {
+              'type': 'retry',
+              'attempt': 1,
+              'message': 'Free usage exceeded, subscribe to Go',
+              'next': 2000,
+              'action': {
+                'reason': 'free_tier_limit',
+                'provider': 'opencode',
+                'title': 'Free limit reached',
+                'message': 'Subscribe to Go',
+                'label': 'subscribe',
+              },
+            },
+          },
+        },
+        {
+          'payload': {
+            'type': 'message.updated',
+            'properties': {
+              'info': {
+                'id': 'assistant',
+                'parentID': 'request',
+                'sessionID': 'session-1',
+                'role': 'assistant',
+                'error': {
+                  'name': 'APIError',
+                  'data': {
+                    'statusCode': 403,
+                    'message': 'Access denied',
+                    'isRetryable': false,
+                  },
+                },
+              },
+            },
+          },
+        },
+      ];
+      final transport = MockClient(
+        (_) async => http.Response(
+          payloads.map((p) => 'data: ${jsonEncode(p)}\n\n').join(),
+          200,
+          headers: {'content-type': 'text/event-stream'},
+        ),
+      );
+      addTearDown(transport.close);
+      final client = OpenCodeCompatibleRuntimeClient(
+        endpoint: _endpoint(AiRuntimeKind.openCode),
+        workspaceDirectory: '.',
+        client: transport,
+      );
+      final events = await (await client.connectEvents()).toList();
+      expect(events, hasLength(2));
+      expect(events.first.sessionId, 'session-1');
+      expect(events.first.failure!.kind, AiRuntimeFailureKind.quotaExceeded);
+      expect(events.last.messageId, 'assistant');
+      expect(events.last.failure!.kind, AiRuntimeFailureKind.permissionDenied);
+    },
+  );
+
+  test('HTTP diagnostics omit sensitive response bodies', () async {
+    final transport = MockClient(
+      (_) async => http.Response('Bearer secret', 401),
+    );
+    addTearDown(transport.close);
+    final client = OpenCodeCompatibleRuntimeClient(
+      endpoint: _endpoint(AiRuntimeKind.openCode),
+      workspaceDirectory: '.',
+      client: transport,
+    );
+    await expectLater(
+      client.createSession(),
+      throwsA(
+        isA<AiRuntimeApiException>()
+            .having((e) => e.body, 'explicit original body', 'Bearer secret')
+            .having(
+              (e) => e.toString(),
+              'safe diagnostics',
+              'Runtime API returned HTTP 401.',
+            ),
+      ),
+    );
+  });
   for (final kind in AiRuntimeKind.values) {
     test('${kind.name} sends auth, workspace and OAuth contracts', () async {
       final requests = <http.Request>[];

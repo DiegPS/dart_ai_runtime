@@ -2,6 +2,64 @@ import 'package:dart_ai_runtime/dart_ai_runtime.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+    'verified free quota wording is conservative and preserves its cause',
+    () {
+      for (final message in [
+        'Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go',
+        'Free usage exceeded, subscribe to Go',
+        'Service unavailable',
+        'Resource exhausted',
+        'Rate limit exceeded',
+        'Usage limit reached. It will reset in 5 minutes.',
+      ]) {
+        final status = {
+          'type': 'retry',
+          'attempt': 1,
+          'message': message,
+          'next': 2000,
+        };
+        final event = AiRuntimeEvent.fromJson({
+          'type': 'session.status',
+          'properties': {'sessionID': 'session-1', 'status': status},
+        });
+        expect(event.isError, message.startsWith('Free usage'));
+        if (event.isError) expect(event.failure!.cause, same(status));
+      }
+    },
+  );
+
+  test('ProviderAuthError is typed without requiring HTTP status', () {
+    final cause = {
+      'name': 'ProviderAuthError',
+      'data': {'providerID': 'test', 'message': 'Bearer secret'},
+    };
+    final error = AiRuntimeGenerationException.fromRuntimeError(cause);
+    expect(error.kind, AiRuntimeFailureKind.authentication);
+    expect(error.cause, same(cause));
+    expect(error.toString(), isNot(contains('secret')));
+  });
+
+  test(
+    'null error is not treated as rejection and unknown errors retain cause',
+    () {
+      expect(
+        AiRuntimeEvent.fromJson({
+          'type': 'message.updated',
+          'properties': {'error': null},
+        }).isError,
+        isFalse,
+      );
+      final cause = {
+        'name': 'UnknownError',
+        'data': {'message': 'private body'},
+      };
+      final error = AiRuntimeGenerationException.fromRuntimeError(cause);
+      expect(error.kind, AiRuntimeFailureKind.unknown);
+      expect(error.cause, same(cause));
+      expect(error.toString(), isNot(contains('private body')));
+    },
+  );
   test('prompt correlation id is optional and serialized without losing permissions', () {
     const prompt = AiPrompt(
       providerId: 'test',

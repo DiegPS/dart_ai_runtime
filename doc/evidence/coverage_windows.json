@@ -1,0 +1,344 @@
+{
+  "metric": "executable line coverage",
+  "scope": "lib/",
+  "hit": 1960,
+  "total": 2117,
+  "percentage": 92.58384506376949,
+  "minimum": 90.0,
+  "passed": true,
+  "files": [
+    {
+      "path": "lib/src/application/conversation_controller.dart",
+      "hit": 352,
+      "total": 383,
+      "percentage": 91.90600522193212,
+      "uncoveredLines": [
+        92,
+        97,
+        104,
+        132,
+        133,
+        210,
+        211,
+        212,
+        232,
+        244,
+        249,
+        250,
+        251,
+        252,
+        254,
+        277,
+        338,
+        339,
+        343,
+        376,
+        598,
+        599,
+        600,
+        601,
+        602,
+        603,
+        604,
+        605,
+        606,
+        609,
+        710
+      ]
+    },
+    {
+      "path": "lib/src/application/model_selection_controller.dart",
+      "hit": 64,
+      "total": 66,
+      "percentage": 96.96969696969697,
+      "uncoveredLines": [
+        51,
+        124
+      ]
+    },
+    {
+      "path": "lib/src/application/provider_connection_controller.dart",
+      "hit": 106,
+      "total": 106,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/application/runtime_supervisor.dart",
+      "hit": 106,
+      "total": 138,
+      "percentage": 76.81159420289855,
+      "uncoveredLines": [
+        38,
+        40,
+        41,
+        43,
+        44,
+        66,
+        67,
+        73,
+        74,
+        77,
+        90,
+        91,
+        92,
+        95,
+        100,
+        101,
+        104,
+        105,
+        116,
+        122,
+        142,
+        178,
+        191,
+        192,
+        193,
+        194,
+        195,
+        198,
+        199,
+        208,
+        215,
+        216
+      ]
+    },
+    {
+      "path": "lib/src/domain/artifact_models.dart",
+      "hit": 39,
+      "total": 39,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/domain/conversation_models.dart",
+      "hit": 14,
+      "total": 14,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/domain/model_selection_models.dart",
+      "hit": 1,
+      "total": 1,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/domain/provider_connection_models.dart",
+      "hit": 1,
+      "total": 1,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/domain/runtime_api_models.dart",
+      "hit": 138,
+      "total": 144,
+      "percentage": 95.83333333333333,
+      "uncoveredLines": [
+        266,
+        283,
+        322,
+        329,
+        357,
+        358
+      ]
+    },
+    {
+      "path": "lib/src/domain/runtime_models.dart",
+      "hit": 23,
+      "total": 23,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/infrastructure/artifact_installer.dart",
+      "hit": 193,
+      "total": 220,
+      "percentage": 87.72727272727273,
+      "uncoveredLines": [
+        87,
+        107,
+        117,
+        162,
+        163,
+        165,
+        182,
+        189,
+        196,
+        197,
+        198,
+        199,
+        200,
+        201,
+        214,
+        230,
+        242,
+        244,
+        311,
+        313,
+        328,
+        386,
+        389,
+        395,
+        398,
+        402,
+        417
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/http_artifact_downloader.dart",
+      "hit": 56,
+      "total": 57,
+      "percentage": 98.24561403508773,
+      "uncoveredLines": [
+        48
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/local_runtime_process_service.dart",
+      "hit": 119,
+      "total": 123,
+      "percentage": 96.7479674796748,
+      "uncoveredLines": [
+        291,
+        292,
+        293,
+        295
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/local_system_prompt_service.dart",
+      "hit": 116,
+      "total": 126,
+      "percentage": 92.06349206349206,
+      "uncoveredLines": [
+        104,
+        105,
+        106,
+        107,
+        142,
+        159,
+        185,
+        220,
+        222,
+        223
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/opencode_compatible_runtime_client.dart",
+      "hit": 204,
+      "total": 204,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/infrastructure/opencode_v2_runtime_client.dart",
+      "hit": 281,
+      "total": 312,
+      "percentage": 90.06410256410257,
+      "uncoveredLines": [
+        29,
+        30,
+        95,
+        96,
+        106,
+        114,
+        115,
+        116,
+        122,
+        170,
+        172,
+        175,
+        178,
+        180,
+        182,
+        183,
+        186,
+        187,
+        333,
+        335,
+        396,
+        402,
+        407,
+        436,
+        447,
+        448,
+        457,
+        518,
+        520,
+        532,
+        581
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/pinned_runtime_catalog.dart",
+      "hit": 26,
+      "total": 26,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/infrastructure/pinned_runtime_installer.dart",
+      "hit": 30,
+      "total": 30,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/infrastructure/runtime_client_factory.dart",
+      "hit": 4,
+      "total": 4,
+      "percentage": 100.0,
+      "uncoveredLines": []
+    },
+    {
+      "path": "lib/src/infrastructure/runtime_health_client.dart",
+      "hit": 25,
+      "total": 29,
+      "percentage": 86.20689655172414,
+      "uncoveredLines": [
+        12,
+        59,
+        72,
+        73
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/runtime_storage.dart",
+      "hit": 36,
+      "total": 38,
+      "percentage": 94.73684210526316,
+      "uncoveredLines": [
+        36,
+        39
+      ]
+    },
+    {
+      "path": "lib/src/infrastructure/windows_job_object.dart",
+      "hit": 26,
+      "total": 33,
+      "percentage": 78.78787878787878,
+      "uncoveredLines": [
+        65,
+        70,
+        71,
+        86,
+        87,
+        106,
+        107
+      ]
+    }
+  ],
+  "platform": "Windows x64",
+  "date": "2026-10-29",
+  "testsPassed": 153,
+  "testsSkipped": 5,
+  "coverageIgnoreDirectivesAdded": 0,
+  "baseline": {
+    "percentage": 76.00567912920019,
+    "total": 2113,
+    "hit": 1606
+  }
+}

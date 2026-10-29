@@ -78,6 +78,7 @@ class HttpArtifactDownloader implements ArtifactDownloader {
     final response = await _client.send(httpRequest).timeout(connectionTimeout);
     if (response.statusCode != HttpStatus.ok &&
         response.statusCode != HttpStatus.partialContent) {
+      await response.stream.listen((_) {}).cancel();
       throw HttpException(
         'Download returned HTTP ${response.statusCode}.',
         uri: request.uri,
@@ -90,12 +91,16 @@ class HttpArtifactDownloader implements ArtifactDownloader {
       mode: offset > 0 ? FileMode.append : FileMode.write,
     );
     var received = offset;
+    final chunks = StreamIterator(response.stream.timeout(inactivityTimeout));
     final cancel = cancellation?.addListener(() {
-      unawaited(sink.close());
+      // Cancelling the reader releases a pending moveNext even if the server
+      // sends no more bytes. Keep the sink open until its buffered bytes flush.
+      unawaited(chunks.cancel().catchError((Object _) {}));
     });
     try {
-      await for (final chunk in response.stream.timeout(inactivityTimeout)) {
+      while (await chunks.moveNext()) {
         cancellation?.throwIfCancelled();
+        final chunk = chunks.current;
         sink.add(chunk);
         received += chunk.length;
         if (received > request.expectedBytes) {
@@ -112,6 +117,9 @@ class HttpArtifactDownloader implements ArtifactDownloader {
       }
     } finally {
       cancel?.call();
+      try {
+        await chunks.cancel();
+      } catch (_) {}
       await sink.flush();
       await sink.close();
     }

@@ -6,6 +6,31 @@ import 'package:http/testing.dart';
 import 'package:test/test.dart';
 
 void main() {
+  for (final pid in [7, 8]) {
+    test('V2 health checks server identity for PID $pid', () async {
+      final health = AiRuntimeHealthClient(
+        client: MockClient((request) async {
+          expect(request.url.path, '/api/info');
+          return http.Response(
+            jsonEncode({'version': '2.2.2', 'pid': pid}),
+            200,
+          );
+        }),
+      );
+      final result = await health.waitUntilReady(
+        AiRuntimeEndpoint(
+          kind: AiRuntimeKind.openCode,
+          baseUri: Uri.parse('http://127.0.0.1:1234'),
+          username: 'opencode',
+          password: 'test',
+          pid: 7,
+          apiVersion: 2,
+        ),
+        timeout: const Duration(milliseconds: 20),
+      );
+      expect(result.healthy, pid == 7);
+    });
+  }
   test('accepts an authenticated healthy loopback runtime', () async {
     final transport = MockClient((request) async {
       expect(request.url.path, '/global/health');

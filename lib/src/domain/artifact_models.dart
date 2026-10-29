@@ -3,7 +3,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 
-enum ArtifactArchiveType { none, zip }
+enum ArtifactArchiveType { none, zip, tarGzip }
 
 class ArtifactPayloadSpec {
   const ArtifactPayloadSpec({

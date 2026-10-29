@@ -31,6 +31,7 @@ class AiRuntimeEndpoint {
     required this.username,
     required this.password,
     required this.pid,
+    this.apiVersion = 1,
   });
 
   final AiRuntimeKind kind;
@@ -38,6 +39,9 @@ class AiRuntimeEndpoint {
   final String username;
   final String password;
   final int pid;
+
+  /// The local HTTP API major version; Kilo uses the V1-compatible contract.
+  final int apiVersion;
 
   bool get isLoopback {
     final host = baseUri.host.toLowerCase();

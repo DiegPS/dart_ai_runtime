@@ -167,7 +167,12 @@ class ArtifactInstaller {
             totalBytes: totalBytes,
           ),
         );
-        await _extractZipSecurely(entry.value, unpacked, cancellation);
+        await _extractSecurely(
+          entry.value,
+          unpacked,
+          entry.key.archiveType,
+          cancellation,
+        );
       }
 
       final content = spec.archiveRoot == null
@@ -289,16 +294,26 @@ class ArtifactInstaller {
     }
   }
 
-  Future<void> _extractZipSecurely(
+  Future<void> _extractSecurely(
     File input,
     Directory output,
+    ArtifactArchiveType type,
     ArtifactDownloadCancellation? cancellation,
   ) async {
     final stream = InputFileStream(input.path);
     try {
-      final archive = ZipDecoder().decodeStream(stream);
+      final archive = type == ArtifactArchiveType.tarGzip
+          ? TarDecoder().decodeBytes(
+              GZipDecoder().decodeBytes(await input.readAsBytes()),
+            )
+          : ZipDecoder().decodeStream(stream);
       for (final entry in archive.files) {
         cancellation?.throwIfCancelled();
+        if (entry.isSymbolicLink) {
+          throw StateError(
+            'Artifact archives must not contain symbolic links.',
+          );
+        }
         final targetPath = _inside(output.path, entry.name);
         if (entry.isFile) {
           final target = File(targetPath);

@@ -12,22 +12,37 @@ import 'local_system_prompt_service.dart';
 import 'runtime_storage.dart';
 import 'windows_job_object.dart';
 
+/// Starts an OS process with explicit isolation settings.
+typedef AiRuntimeProcessStarter = Future<Process> Function(
+  String executable,
+  List<String> arguments, {
+  required String workingDirectory,
+  required Map<String, String> environment,
+  required bool includeParentEnvironment,
+  required bool runInShell,
+});
+
 /// Starts an isolated OpenCode-compatible runtime on a dynamic loopback port.
 class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
   /// Creates a process service backed by private [AiRuntimeStorage].
   ///
-  /// Managed neutral prompts are enabled by default. Setting
+  /// Managed neutral prompts for V1/Kilo are enabled by default. OpenCode 2
+  /// retains the native agent and uses instruction entries through its API.
+  /// Setting
   /// [enableNeutralSystemPrompts] to `false` restores pure upstream mode and
   /// disables all external plugins.
   LocalAiRuntimeProcessService(
     this._storage, {
     AiRuntimeSystemPromptService? systemPromptService,
     bool enableNeutralSystemPrompts = true,
+    AiRuntimeProcessStarter? processStarter,
   }) : _systemPromptService = enableNeutralSystemPrompts
            ? systemPromptService ?? LocalAiRuntimeSystemPromptService(_storage)
-           : null;
+           : null,
+       _startProcess = processStarter ?? Process.start;
 
   final AiRuntimeStorage _storage;
+  final AiRuntimeProcessStarter _startProcess;
   final AiRuntimeSystemPromptService? _systemPromptService;
 
   /// The bridge used by clients to supply neutral per-session system prompts.
@@ -42,15 +57,17 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
   }) async {
     final definition = installation.definition;
     final kind = definition.kind;
+    final isV2 =
+        kind == AiRuntimeKind.openCode && definition.version.startsWith('2.');
     await _storage.createPrivateDirectories(kind);
-    await _systemPromptService?.prepare(kind);
+    if (!isV2) await _systemPromptService?.prepare(kind);
     final executable = File(
       p.join(installation.directoryPath, definition.executableName),
     );
     if (!await executable.exists()) {
       throw StateError('${definition.executableName} is not installed.');
     }
-    final process = await Process.start(
+    final process = await _startProcess(
       executable.path,
       const ['serve', '--hostname', '127.0.0.1', '--port', '0'],
       workingDirectory: _storage.workspace(kind).path,
@@ -61,6 +78,7 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
         password: password,
         parentEnvironment: Platform.environment,
         allowManagedPlugins: _systemPromptService != null,
+        apiVersion: isV2 ? 2 : 1,
       ),
       includeParentEnvironment: false,
       runInShell: false,
@@ -76,7 +94,8 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
         job: job,
         username: kind.id,
         password: password,
-        cleanup: _systemPromptService == null
+        apiVersion: isV2 ? 2 : 1,
+        cleanup: isV2 || _systemPromptService == null
             ? null
             : () => _systemPromptService.clearSystemPrompts(kind),
       );
@@ -121,6 +140,7 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
     required String password,
     Map<String, String> parentEnvironment = const {},
     bool allowManagedPlugins = false,
+    int apiVersion = 1,
   }) {
     final sanitized = <String, String>{};
     for (final entry in parentEnvironment.entries) {
@@ -152,6 +172,27 @@ class LocalAiRuntimeProcessService implements AiRuntimeProcessService {
         'KILO_DISABLE_EMBEDDED_WEB_UI': '1',
       },
     });
+    if (kind == AiRuntimeKind.openCode && apiVersion == 2) {
+      // Preserve V1 data/configuration and let the official V2 server identify
+      // its own artifact. Execution is controlled by native session permissions.
+      sanitized.remove('OPENCODE_CLIENT');
+      sanitized.remove('OPENCODE_DISABLE_TOOLS');
+      sanitized.remove('OPENCODE_PURE');
+      sanitized.addAll({
+        'OPENCODE_PASSWORD': password,
+        'OPENCODE_CONFIG_DIR': p.join(
+          storage.config(kind).path,
+          'v2',
+          'opencode',
+        ),
+        'OPENCODE_CONFIG_CONTENT': '{"update":"disable","plugins":[]}',
+        'OPENCODE_DISABLE_CLAUDE_CODE': '1',
+        'XDG_DATA_HOME': p.join(storage.data(kind).path, 'v2'),
+        'XDG_CONFIG_HOME': p.join(storage.config(kind).path, 'v2'),
+        'XDG_CACHE_HOME': p.join(storage.cache(kind).path, 'v2'),
+        'XDG_STATE_HOME': p.join(storage.state(kind).path, 'v2'),
+      });
+    }
     return sanitized;
   }
 }
@@ -163,6 +204,7 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
     required WindowsJobObject? job,
     required this.username,
     required this.password,
+    required this.apiVersion,
     required Future<void> Function()? cleanup,
   }) : _process = process,
        _job = job,
@@ -190,6 +232,7 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
   final AiRuntimeKind kind;
   final String username;
   final String password;
+  final int apiVersion;
   final Process _process;
   WindowsJobObject? _job;
   final Future<void> Function()? _cleanupCallback;
@@ -229,6 +272,7 @@ class _LocalAiRuntimeProcess implements AiRuntimeProcessHandle {
         username: username,
         password: password,
         pid: _process.pid,
+        apiVersion: apiVersion,
       ),
     );
   }

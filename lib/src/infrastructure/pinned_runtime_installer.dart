@@ -14,6 +14,7 @@ class PinnedAiRuntimeInstaller implements AiRuntimeInstallService {
     required AiRuntimeStorage storage,
     required ArtifactDownloader downloader,
     this.developmentExecutables = const {},
+    this.runtimeDefinitions = const {},
   }) : _installer = ArtifactInstaller(
          sharedRoot: storage.sharedStoreRoot,
          downloader: downloader,
@@ -24,9 +25,12 @@ class PinnedAiRuntimeInstaller implements AiRuntimeInstallService {
   final ArtifactInstaller _installer;
   final Map<AiRuntimeKind, String?> developmentExecutables;
 
+  /// Explicit distribution overrides, for example a retained V1 installation.
+  final Map<AiRuntimeKind, AiRuntimeDefinition> runtimeDefinitions;
+
   @override
   AiRuntimeDefinition definition(AiRuntimeKind kind) =>
-      _catalog.definition(kind);
+      runtimeDefinitions[kind] ?? _catalog.definition(kind);
 
   @override
   Future<AiRuntimeInstallation?> installed(AiRuntimeKind kind) async {

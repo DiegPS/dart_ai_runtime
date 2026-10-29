@@ -9,7 +9,7 @@ Airstream, Flutter widgets, Riverpod, or application preferences.
 - Pinned OpenCode and Kilo Windows x64 distributions.
 - HTTPS downloads with retries and resume support.
 - Exact byte-count and SHA-256 verification.
-- Safe ZIP extraction and immutable, content-addressed installations.
+- Safe ZIP/tar.gz extraction and immutable, content-addressed installations.
 - In-process and cross-process locking for applications sharing one store.
 - Dynamic loopback ports and ephemeral Basic Auth credentials.
 - Sanitized child environments that do not inherit provider credentials.
@@ -21,8 +21,9 @@ Airstream, Flutter widgets, Riverpod, or application preferences.
   reconciliation.
 - Framework-neutral provider authentication and safe model selection
   controllers.
-- Managed neutral agents that remove the built-in coding prompt while keeping
-  tools denied by default.
+- Native OpenCode 2 agents with host instruction entries and permission requests
+  rejected before unauthorized operations execute.
+- Managed neutral agents for V1/Kilo, with tools denied by default.
 - One-shot, private system-prompt transport keyed by runtime session, allowing
   live host context to change on every turn.
 
@@ -40,7 +41,7 @@ application.
 
 ```text
 sharedStoreRoot/
-  artifacts/ai-runtime/opencode/versions/1.18.27/<fingerprint>/
+  artifacts/ai-runtime/opencode/versions/2.2.2/<fingerprint>/
   artifacts/ai-runtime/kilo/versions/7.5.9/<fingerprint>/
   downloads/
   locks/
@@ -91,13 +92,17 @@ final supervisor = AiRuntimeSupervisor(
 );
 
 final endpoint = await supervisor.start(AiRuntimeKind.openCode);
-final client = OpenCodeCompatibleRuntimeClient(
+final client = createAiRuntimeClient(
   endpoint: endpoint,
   workspaceDirectory: storage.workspace(endpoint.kind).path,
   systemPromptService: processes.systemPromptService,
 );
 final providers = await client.providers();
 ```
+
+OpenCode now pins **2.2.2** and uses its native `/api/*` contract. Use
+`createAiRuntimeClient` in host factories so OpenCode 2 and Kilo/V1 select the
+correct adapter. See [OpenCode 2 migration and real validation](doc/opencode_v2.md).
 
 For complete conversation handling, construct `AiConversationController` with
 the supervisor and a client factory. It opens SSE before dispatching, rejects
@@ -120,14 +125,19 @@ creation. The model still processes its conversation history for each turn, so
 the exact latency improvement depends on provider-side prompt caching and the
 selected model.
 
-The host may supply a different `systemPrompt` on every call. With
-`systemPromptService` configured as above, the client writes that value to a
+The host may supply a different `systemPrompt` on every call. OpenCode 2 stores
+it as a native instruction entry that supplements the agent's instructions.
+The native agent and tool definitions remain intact, while unapproved operations
+wait for permission and are rejected by the client, including after SSE loss.
+This differs from replacing the complete coding system prompt.
+
+For V1/Kilo, with `systemPromptService` configured as above, the client writes that value to a
 private one-shot file keyed by session ID. The trusted plugin consumes and
 deletes it while assembling the model request. This is necessary because the
 OpenCode-compatible system transformation hook does not receive the HTTP
 `system` field in its transform input.
 
-Managed neutral mode fails closed if the private runtime configuration lists
+V1/Kilo managed neutral mode fails closed if the private runtime configuration lists
 another external plugin or contains an auto-loaded `.js`/`.ts` plugin. This
 prevents an unrelated plugin from silently adding instructions or tools. Hosts
 that intentionally need arbitrary upstream plugins must construct
@@ -137,7 +147,7 @@ own the resulting prompt and tool security model themselves.
 ```dart
 final conversation = AiConversationController(
   supervisor: supervisor,
-  clientFactory: (endpoint) => OpenCodeCompatibleRuntimeClient(
+  clientFactory: (endpoint) => createAiRuntimeClient(
     endpoint: endpoint,
     workspaceDirectory: storage.workspace(endpoint.kind).path,
     systemPromptService: processes.systemPromptService,
@@ -145,16 +155,16 @@ final conversation = AiConversationController(
 );
 
 final first = await conversation.sendAndWait(
-  text: '¿Qué hago antes del dragón?',
-  providerId: 'kilo',
-  modelId: 'openrouter/free',
-  systemPrompt: currentGameTelemetry,
+  text: 'Hola',
+  providerId: 'opencode',
+  modelId: 'big-pickle',
+  systemPrompt: 'Respond briefly in Spanish. Never use tools.',
 );
 final second = await conversation.sendAndWait(
-  text: '¿Y si el jungla rival aparece abajo?',
-  providerId: 'kilo',
-  modelId: 'openrouter/free',
-  systemPrompt: refreshedGameTelemetry,
+  text: 'Salúdame otra vez.',
+  providerId: 'opencode',
+  modelId: 'big-pickle',
+  systemPrompt: 'Respond briefly in Spanish. Never use tools.',
 );
 ```
 
@@ -163,13 +173,13 @@ controllers for independent simultaneous conversations. Calls within one
 controller are serialized; starting a second generation while one is active
 throws a `StateError`.
 
-Neutral prompt replacement controls which host instructions and tools reach the
+For V1/Kilo, neutral prompt replacement controls which host instructions and tools reach the
 model; it does not make model output factually correct. Applications such as a
 game coach should provide structured, patch-specific facts and validate any
 item, ability, price, or statistical claim before presenting it as authoritative.
 
 `AiModelSelectionController` never chooses a paid model automatically and
-prefers `kilo/kilo-auto/free` when available. `AiProviderConnectionController`
+prefers `kilo/kilo-auto/free` when available. For V1/Kilo, `AiProviderConnectionController`
 validates OAuth responses and confirms every connection or disconnection
 against the runtime provider catalog. Persistence is supplied by host-owned
 `AiModelSelectionStore` and `AiConversationHistoryStore` adapters.
@@ -181,6 +191,10 @@ Tools are denied by default in `AiPrompt`. A host must explicitly opt into tool
 patterns and remains responsible for communicating the security implications
 to its users.
 
+V2 permission patterns are native action patterns, rather than V1 tool names.
+Provider credential setup for V2 uses OpenCode's own integration mechanisms;
+the legacy OAuth/API-key controller is unchanged for V1/Kilo.
+
 ## Migration rule
 
 Legacy GodSense runtime directories and personal OpenCode/Kilo installations
@@ -190,6 +204,19 @@ release-specific executable digest. Old private runtime data must remain under
 the original application's ownership and must never be copied to another app.
 
 ## Validation
+
+Line coverage is checked against a **90%** minimum for `lib/`, including native
+Windows process handling. See [testing and coverage](doc/testing.md) for the
+reproducible commands, report scope, and measured results.
+
+```powershell
+dart run coverage:test_with_coverage
+dart run tool/check_coverage.dart
+```
+
+Runtime rejections are exposed as `AiRuntimeGenerationException`, including
+failures received before assistant text. See [error handling and migration](doc/runtime_errors.md)
+for categories, cleanup guarantees, verified upstream contracts, and limitations.
 
 ```powershell
 dart format --output=none --set-exit-if-changed lib test
@@ -208,6 +235,17 @@ dart test test\integration\live_runtime_process_test.dart
 Real multi-turn inference is separately opt-in because it contacts the selected
 provider and may be subject to its terms, retention policy, rate limits, and
 costs:
+
+The recommended OpenCode 2 test installs the verified pin and checks three real
+Big Pickle responses, SSE, model identity, and changing host instructions:
+
+```powershell
+$env:DART_AI_RUNTIME_TEST_OPENCODE_V2='1'
+dart test test\integration\live_opencode_v2_test.dart
+```
+
+The older neutral-plugin test below is for V1/Kilo. OpenCode V1 free-model
+availability is no longer supported by upstream:
 
 ```powershell
 $env:DART_AI_RUNTIME_TEST_INFERENCE='1'

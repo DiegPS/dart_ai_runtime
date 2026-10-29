@@ -21,6 +21,345 @@ void main() {
 
   tearDown(() => supervisor.dispose());
 
+  Future<void> waitForPrompt(_RuntimeClient client) async {
+    while (client.lastPrompt == null) {
+      await Future<void>.delayed(Duration.zero);
+    }
+  }
+
+  Future<Object> request(AiConversationController controller) => controller
+      .sendAndWait(
+        text: 'Hello',
+        providerId: 'test',
+        modelId: 'model',
+        systemPrompt: '',
+        timeout: const Duration(seconds: 1),
+      )
+      .then<Object>((value) => value, onError: (Object error) => error);
+
+  AiRuntimeEvent rejection({String session = 'session-1'}) =>
+      AiRuntimeEvent.fromJson({
+        'type': 'session.status',
+        'properties': {
+          'sessionID': session,
+          'status': {
+            'type': 'retry',
+            'attempt': 1,
+            'message': 'Free usage exceeded, subscribe to Go',
+            'action': {
+              'reason': 'free_tier_limit',
+              'provider': 'opencode',
+              'title': 'Free limit reached',
+              'message': 'Subscribe to OpenCode Go for reliable access to the best open-source models for \$10/month.',
+              'label': 'subscribe',
+              'link': 'https://opencode.ai/go',
+            },
+            'next': 2000,
+          },
+        },
+      });
+
+  for (final cleanup in ['success', 'failure', 'stalled']) {
+    test(
+      'quota rejection before text survives $cleanup cleanup and allows another turn',
+      () async {
+        final client = _RuntimeClient();
+        if (cleanup == 'failure') {
+          client.abortFailure = StateError('abort failed');
+          client.deleteFailure = StateError('delete failed');
+        }
+        final stalled = Completer<void>();
+        if (cleanup == 'stalled') client.abortGate = stalled;
+        final controller = AiConversationController(
+          supervisor: supervisor,
+          clientFactory: (_) => client,
+          reconciliationInterval: const Duration(milliseconds: 10),
+        );
+        addTearDown(controller.dispose);
+        final first = request(controller);
+        await waitForPrompt(client);
+        final event = rejection();
+        client.emit(event);
+        client.emit(
+          _event('message.updated', messageId: 'late', role: 'assistant'),
+        );
+        client.emit(
+          _event('message.part.updated', messageId: 'late', fullText: 'late'),
+        );
+        client.emit(_event('message.completed', messageId: 'late'));
+        final error = await first;
+        expect(
+          error,
+          isA<AiRuntimeGenerationException>().having(
+            (e) => e.kind,
+            'kind',
+            AiRuntimeFailureKind.quotaExceeded,
+          ),
+        );
+        expect(
+          (error as AiRuntimeGenerationException).cause,
+          same(event.properties['status']),
+        );
+        expect(controller.state.error, same(error));
+        expect(controller.state.sessionId, isNull);
+        expect(controller.state.isBusy, isFalse);
+        expect(controller.state.streamedText, isEmpty);
+        client.onPrompt = () {
+          client.emit(
+            rejection(),
+          ); // Retired session cannot reject the new turn.
+          client.emit(
+            _event(
+              'message.updated',
+              sessionId: 'session-2',
+              messageId: 'next',
+              role: 'assistant',
+            ),
+          );
+          client.emit(
+            _event(
+              'message.part.updated',
+              sessionId: 'session-2',
+              messageId: 'next',
+              fullText: 'Recovered',
+            ),
+          );
+          client.emit(
+            _event(
+              'message.completed',
+              sessionId: 'session-2',
+              messageId: 'next',
+            ),
+          );
+        };
+        expect(await request(controller), 'Recovered');
+        if (cleanup == 'stalled') stalled.complete();
+        await Future<void>.delayed(const Duration(milliseconds: 30));
+        expect(client.abortCount, 1);
+        expect(client.deletedSessions, ['session-1']);
+        expect(controller.state.error, isNull);
+      },
+    );
+  }
+
+  test(
+    'temporary retry and unrelated errors do not reject a valid answer',
+    () async {
+      final client = _RuntimeClient();
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+      );
+      addTearDown(controller.dispose);
+      final response = request(controller);
+      await waitForPrompt(client);
+      client.emit(rejection(session: 'other'));
+      client.emit(
+        AiRuntimeEvent.fromJson({
+          'type': 'session.error',
+          'properties': {
+            'error': {
+              'name': 'APIError',
+              'data': {'statusCode': 403},
+            },
+          },
+        }),
+      ); // Unscoped failure is not attributable to this generation.
+      client.emit(
+        AiRuntimeEvent.fromJson({
+          'type': 'message.updated',
+          'properties': {
+            'info': {
+              'id': 'old',
+              'sessionID': 'session-1',
+              'role': 'assistant',
+              'parentID': 'previous-request',
+              'error': {
+                'name': 'ProviderAuthError',
+                'data': {'message': 'denied'},
+              },
+            },
+          },
+        }),
+      );
+      client.emit(
+        AiRuntimeEvent.fromJson({
+          'type': 'session.status',
+          'properties': {
+            'sessionID': 'session-1',
+            'status': {
+              'type': 'retry',
+              'attempt': 1,
+              'message': 'Service unavailable',
+              'next': 2000,
+            },
+          },
+        }),
+      );
+      client.emit(
+        _event('message.updated', messageId: 'answer', role: 'assistant'),
+      );
+      client.emit(
+        _event('message.part.updated', messageId: 'answer', fullText: 'OK'),
+      );
+      client.emit(_event('message.completed', messageId: 'answer'));
+      expect(await response, 'OK');
+      expect(client.abortCount, 0);
+    },
+  );
+
+  for (final channel in ['session.error', 'message.updated', 'snapshot']) {
+    for (final code in [401, 403]) {
+      test(
+        '$channel exposes HTTP $code before text without timing out',
+        () async {
+          final client = _RuntimeClient();
+          final controller = AiConversationController(
+            supervisor: supervisor,
+            clientFactory: (_) => client,
+            reconciliationInterval: const Duration(milliseconds: 10),
+          );
+          addTearDown(controller.dispose);
+          final response = request(controller);
+          await waitForPrompt(client);
+          final cause = {
+            'name': 'APIError',
+            'data': {
+              'message': 'private failure',
+              'statusCode': code,
+              'isRetryable': false,
+              'responseBody': 'secret',
+              'responseHeaders': {'authorization': 'Bearer secret'},
+            },
+          };
+          final info = {
+            'id': 'assistant',
+            'sessionID': 'session-1',
+            'role': 'assistant',
+            'parentID': client.lastPrompt!.messageId,
+            'error': cause,
+          };
+          if (channel == 'snapshot') {
+            client.history = [
+              {'info': info, 'parts': <Object>[]},
+            ];
+          } else {
+            client.emit(
+              AiRuntimeEvent.fromJson({
+                'type': channel,
+                'properties': {
+                  'sessionID': 'session-1',
+                  if (channel == 'session.error')
+                    'error': cause
+                  else
+                    'info': info,
+                },
+              }),
+            );
+          }
+          final error = await response;
+          expect(error, isA<AiRuntimeGenerationException>());
+          final failure = error as AiRuntimeGenerationException;
+          expect(
+            failure.kind,
+            code == 401
+                ? AiRuntimeFailureKind.authentication
+                : AiRuntimeFailureKind.permissionDenied,
+          );
+          expect(failure.cause, same(cause));
+          expect(failure.toString(), isNot(contains('secret')));
+          expect(failure.toString(), isNot(contains('private failure')));
+        },
+      );
+    }
+  }
+
+  test(
+    'rejection during pending dispatch cannot fail the next request',
+    () async {
+      final client = _RuntimeClient()..promptAccepted = Completer<void>();
+      final oldDispatch = client.promptAccepted!;
+      final controller = AiConversationController(
+        supervisor: supervisor,
+        clientFactory: (_) => client,
+      );
+      addTearDown(controller.dispose);
+      final first = request(controller);
+      await waitForPrompt(client);
+      client.emit(rejection());
+      expect(await first, isA<AiRuntimeGenerationException>());
+      client.promptAccepted = null;
+      final next = request(controller);
+      while (client.prompts.length < 2) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      oldDispatch.completeError(StateError('late dispatch failure'));
+      await Future<void>.delayed(Duration.zero);
+      expect(client.abortCount, 1);
+      client.emit(
+        _event(
+          'message.updated',
+          sessionId: 'session-2',
+          messageId: 'next',
+          role: 'assistant',
+        ),
+      );
+      client.emit(
+        _event(
+          'message.part.updated',
+          sessionId: 'session-2',
+          messageId: 'next',
+          fullText: 'OK',
+        ),
+      );
+      client.emit(
+        _event('message.completed', sessionId: 'session-2', messageId: 'next'),
+      );
+      expect(await next, 'OK');
+    },
+  );
+
+  test('rejection cleanup expires while dispatch stays silent', () async {
+    final gate = Completer<void>();
+    final client = _RuntimeClient()..promptAccepted = gate;
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+    );
+    addTearDown(controller.dispose);
+    final response = request(controller);
+    await waitForPrompt(client);
+    client.emit(rejection());
+    final error = await response;
+    expect(error, isA<AiRuntimeGenerationException>());
+    await Future<void>.delayed(const Duration(milliseconds: 2100));
+    expect(controller.state.error, same(error));
+    expect(controller.state.isBusy, isFalse);
+    expect(client.abortCount, 0);
+    expect(client.deletedSessions, isEmpty);
+    gate.complete();
+    await Future<void>.delayed(Duration.zero);
+    expect(controller.state.error, same(error));
+  });
+
+  test('typed reconciliation failures retire the turn instead of becoming timeouts', () async {
+    final error = AiRuntimeGenerationException(
+      kind: AiRuntimeFailureKind.unknown,
+      cause: {'type': 'runtime.model-mismatch'},
+    );
+    final client = _RuntimeClient()..snapshotFailure = error;
+    final controller = AiConversationController(
+      supervisor: supervisor,
+      clientFactory: (_) => client,
+      reconciliationInterval: const Duration(milliseconds: 10),
+    );
+    addTearDown(controller.dispose);
+    expect(await request(controller), same(error));
+    expect(controller.state.error, same(error));
+    expect(controller.state.isBusy, isFalse);
+    expect(controller.state.sessionId, isNull);
+  });
+
   for (final partKind in ['text', 'reasoning']) {
     test(
       'active $partKind progress outlives the idle reconciliation budget',
@@ -921,6 +1260,10 @@ class _RuntimeClient implements AiRuntimeClient {
   bool eventsConnected = false;
   int abortCount = 0;
   Object? abortFailure;
+  Object? snapshotFailure;
+  Object? deleteFailure;
+  Completer<void>? abortGate;
+  final List<String> deletedSessions = [];
   bool disposed = false;
   AiPrompt? lastPrompt;
   final List<AiPrompt> prompts = [];
@@ -933,6 +1276,7 @@ class _RuntimeClient implements AiRuntimeClient {
   @override
   Future<void> abort(String sessionId) async {
     abortCount++;
+    await abortGate?.future;
     if (abortFailure != null) throw abortFailure!;
   }
 
@@ -950,7 +1294,10 @@ class _RuntimeClient implements AiRuntimeClient {
       AiSession(id: 'session-${++createSessionCount}');
 
   @override
-  Future<void> deleteSession(String sessionId) async {}
+  Future<void> deleteSession(String sessionId) async {
+    deletedSessions.add(sessionId);
+    if (deleteFailure != null) throw deleteFailure!;
+  }
 
   @override
   void dispose() {
@@ -962,8 +1309,10 @@ class _RuntimeClient implements AiRuntimeClient {
   Stream<AiRuntimeEvent> events() => _events.stream;
 
   @override
-  Future<List<Map<String, dynamic>>> messages(String sessionId) async =>
-      history;
+  Future<List<Map<String, dynamic>>> messages(String sessionId) async {
+    if (lastPrompt != null && snapshotFailure != null) throw snapshotFailure!;
+    return history;
+  }
 
   @override
   Future<void> promptAsync(String sessionId, AiPrompt prompt) async {
